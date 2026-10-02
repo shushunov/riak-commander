@@ -93,6 +93,15 @@ func (a *App) indexQueryDialog() {
 		hint += " Known here: " + strings.Join(suggestions, ", ") + "."
 	}
 
+	// Created once and re-added as the mode changes, so typed text survives
+	// switching between exact and range.
+	valueField := tview.NewInputField().SetText(last.from).SetFieldWidth(40)
+	toField := tview.NewInputField().SetLabel("To").SetText(last.to).SetFieldWidth(40)
+	maxField := tview.NewInputField().SetLabel("Max results").SetText(strconv.Itoa(last.max)).SetFieldWidth(10)
+	for _, in := range []*tview.InputField{valueField, toField, maxField} {
+		styleInput(in)
+	}
+
 	a.form(formSpec{
 		title:   "2i query on " + k,
 		okLabel: "Query",
@@ -121,10 +130,28 @@ func (a *App) indexQueryDialog() {
 				modeIdx = 1
 			}
 			f.AddDropDown("Mode", []string{"exact", "range"}, modeIdx, nil)
-			f.AddInputField("Value / From", last.from, 40, nil, nil)
-			f.AddInputField("To (range)", last.to, 40, nil, nil)
-			placeholder(f, "To (range)", "only used in range mode")
-			f.AddInputField("Max results", strconv.Itoa(last.max), 10, nil, nil)
+			// the value / To / Max results fields are added by applyMode
+		},
+		setup: func(f *tview.Form, refit func()) {
+			applyMode := func(mode string) {
+				for f.GetFormItemCount() > 2 { // keep Index and Mode
+					f.RemoveFormItem(f.GetFormItemCount() - 1)
+				}
+				if mode == "range" {
+					valueField.SetLabel("From")
+					f.AddFormItem(valueField).AddFormItem(toField)
+				} else {
+					valueField.SetLabel("Value")
+					f.AddFormItem(valueField)
+				}
+				f.AddFormItem(maxField)
+				refit()
+			}
+			// attach the callback only now: AddDropDown fires it while the
+			// dropdown is built, before the other fields exist
+			mode := f.GetFormItemByLabel("Mode").(*tview.DropDown)
+			mode.SetSelectedFunc(func(option string, _ int) { applyMode(option) })
+			applyMode(last.mode)
 			if last.index != "" {
 				f.SetFocus(2) // jump straight to the value
 			}
@@ -133,8 +160,8 @@ func (a *App) indexQueryDialog() {
 			q := indexQuery{
 				index: strings.TrimSpace(inputText(f, "Index")),
 				mode:  dropdownValue(f, "Mode"),
-				from:  inputText(f, "Value / From"),
-				to:    inputText(f, "To (range)"),
+				from:  valueField.GetText(),
+				to:    toField.GetText(),
 			}
 			if q.index == "" {
 				return fmt.Errorf("enter an index name")
@@ -161,7 +188,7 @@ func (a *App) indexQueryDialog() {
 			} else if to == "" {
 				return fmt.Errorf("range mode needs a To value")
 			}
-			maxResults, err := strconv.Atoi(strings.TrimSpace(inputText(f, "Max results")))
+			maxResults, err := strconv.Atoi(strings.TrimSpace(maxField.GetText()))
 			if err != nil || maxResults < 1 {
 				return fmt.Errorf("max results must be a positive number")
 			}

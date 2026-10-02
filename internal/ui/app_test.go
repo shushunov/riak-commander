@@ -64,6 +64,9 @@ func (s *stubRiak) handler() http.Handler {
 	mux.HandleFunc("/buckets/users/keys", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"keys":["alice"]}`)
 	})
+	mux.HandleFunc("/buckets/users/index/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"keys":["alice"]}`)
+	})
 	mux.HandleFunc("/buckets/users/props", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"props":{"name":"users","allow_mult":false}}`)
 	})
@@ -452,4 +455,63 @@ func TestOpeningSlowKeyShowsLoadingInValuePane(t *testing.T) {
 	release()
 	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
 	waitFor(t, sim, app, "EDITABLE")
+}
+
+// screenHas reports whether the screen currently shows substr.
+func screenHas(sim tcell.SimulationScreen, app *App, substr string) bool {
+	var txt string
+	app.tv.QueueUpdateDraw(func() { txt = screenText(sim) })
+	return strings.Contains(txt, substr)
+}
+
+func TestIndexQueryShowsToFieldOnlyInRangeMode(t *testing.T) {
+	stub := &stubRiak{}
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+
+	app := New(srv.URL, Options{Timeout: 5 * time.Second})
+	sim := startApp(t, app)
+	openDefaultType(t, sim, app)
+	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	waitFor(t, sim, app, "· alice")
+
+	// exact mode (the default): one value field, no To
+	typeText(sim, "i")
+	waitFor(t, sim, app, "2i query on default/users")
+	waitFor(t, sim, app, "Value")
+	if screenHas(sim, app, " To ") {
+		t.Fatal("To field shown in exact mode")
+	}
+
+	// switch to range: From and To appear
+	typeText(sim, "email_bin")
+	sim.InjectKey(tcell.KeyTab, 0, tcell.ModNone)   // → Mode
+	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone) // open the list
+	sim.InjectKey(tcell.KeyDown, 0, tcell.ModNone)
+	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone) // pick "range"
+	waitFor(t, sim, app, "From")
+	waitFor(t, sim, app, " To ")
+
+	sim.InjectKey(tcell.KeyTab, 0, tcell.ModNone) // → From
+	typeText(sim, "a")
+	sim.InjectKey(tcell.KeyTab, 0, tcell.ModNone) // → To
+	typeText(sim, "z")
+	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	waitFor(t, sim, app, "2i email_bin ∈ [a … z]: 1 key")
+
+	// the last (range) query is remembered, To included
+	typeText(sim, "i")
+	waitFor(t, sim, app, "2i query on default/users")
+	waitFor(t, sim, app, " To ")
+
+	// back to exact: To disappears again
+	sim.InjectKey(tcell.KeyBacktab, 0, tcell.ModNone) // From → Mode
+	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	sim.InjectKey(tcell.KeyUp, 0, tcell.ModNone)
+	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone) // pick "exact"
+	waitFor(t, sim, app, "Value")
+	time.Sleep(100 * time.Millisecond)
+	if screenHas(sim, app, " To ") {
+		t.Fatal("To field still shown after switching back to exact")
+	}
 }

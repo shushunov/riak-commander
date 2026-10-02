@@ -151,8 +151,8 @@ confirm. This is permanent.
 
 **Query a secondary index**: press `i` in a bucket (or with a bucket
 selected). Enter the index name (`…_bin` or `…_int`). Names seen on objects
-you opened, and names from earlier queries, are suggested. Choose exact or
-range and enter the value(s). Results replace the key list; `Esc` returns to
+you opened, and names from earlier queries, are suggested. Choose exact (one
+value) or range (a From and a To field) and enter the value(s). Results replace the key list; `Esc` returns to
 it. `$key` (key-name ranges) and `$bucket` work too. 2i needs a backend that
 supports it (leveldb or memory, not bitcask).
 

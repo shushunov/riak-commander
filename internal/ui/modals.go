@@ -44,14 +44,18 @@ func (c *centered) MouseHandler() func(action tview.MouseAction, event *tcell.Ev
 	}
 }
 
-func (a *App) openModal(p tview.Primitive, width, height int) {
+// openModal shows p as the (single) modal dialog. The returned frame's size
+// may be changed while the dialog is open (see formSpec.setup).
+func (a *App) openModal(p tview.Primitive, width, height int) *centered {
 	if a.modalOpen {
 		a.closeModal()
 	}
 	a.lastFocus = a.tv.GetFocus()
 	a.modalOpen = true
-	a.pages.AddPage(modalPage, center(p, width, height), true, true)
+	c := center(p, width, height)
+	a.pages.AddPage(modalPage, c, true, true)
 	a.tv.SetFocus(p)
+	return c
 }
 
 func (a *App) closeModal() {
@@ -128,6 +132,10 @@ type formSpec struct {
 	// afterOK (optional) runs after a successful OK has closed the dialog,
 	// e.g. to open another dialog.
 	afterOK func()
+	// setup (optional) runs once the form is assembled, before it opens, for
+	// dialogs whose fields change while open: after adding or removing
+	// items, call refit to resize the dialog to the new field count.
+	setup func(f *tview.Form, refit func())
 }
 
 // form builds a modal form with OK/Cancel semantics, an explanatory hint,
@@ -204,21 +212,39 @@ func (a *App) form(spec formSpec) {
 		return ev
 	})
 
-	formRows := 1 + 1 // top padding + buttons row
-	for i := 0; i < f.GetFormItemCount(); i++ {
-		formRows += f.GetFormItem(i).GetFieldHeight() + 1 // item + spacing
-	}
 	hintRows := 0
 	if spec.hint != "" {
 		hintRows = 1 + len([]rune(spec.hint))/(spec.width-4)
 	}
+	// sizes derive from the current items, so refit can recompute them
+	size := func() (formRows, total int) {
+		formRows = 1 + 1 // top padding + buttons row
+		for i := 0; i < f.GetFormItemCount(); i++ {
+			formRows += f.GetFormItem(i).GetFieldHeight() + 1 // item + spacing
+		}
+		return formRows, formRows + hintRows + 3 + 2 // + spacers, footer, borders
+	}
+	formRows, total := size()
 	frame.AddItem(f, formRows, 0, true).
 		AddItem(errView, 0, 0, false).
 		AddItem(spacer(), 1, 0, false).
 		AddItem(hintView, hintRows, 0, false).
 		AddItem(spacer(), 1, 0, false).
 		AddItem(footer, 1, 0, false)
-	a.openModal(frame, spec.width, formRows+hintRows+3+2) // + spacers, footer, borders
+
+	var box *centered // set once the dialog is open
+	refit := func() {
+		formRows, total := size()
+		frame.ResizeItem(f, formRows, 0)
+		if box != nil {
+			box.height = total
+		}
+	}
+	if spec.setup != nil {
+		spec.setup(f, refit)
+		_, total = size()
+	}
+	box = a.openModal(frame, spec.width, total)
 }
 
 // hasAutocomplete marks input fields whose Enter key belongs to the

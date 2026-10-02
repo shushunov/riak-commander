@@ -149,7 +149,8 @@ Esc | leave the results and return to the full key list
 # The query dialog
 Index | the index name; suggestions come from objects you opened in this
       | bucket and from earlier queries
-Mode | exact (one value) or range (From … To, inclusive)
+Mode | exact (one Value) or range (From … To, inclusive; the To
+     | field appears only in range mode)
 Max results | stop after this many keys
 
 The special indexes $key (range over key names) and $bucket (all keys of the
