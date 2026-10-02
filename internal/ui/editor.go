@@ -354,7 +354,7 @@ func (a *App) newKeyDialog() {
 					return
 				}
 				a.status.Success("Created %s", key)
-				b.loadKeysThen(func() { a.viewer.doLoad(btype, bucket, key) })
+				b.reloadKeysThen(func() { a.viewer.doLoad(btype, bucket, key) })
 			})
 			return nil
 		},
@@ -391,7 +391,7 @@ func (a *App) deleteKeyDialog() {
 				if c := a.viewer.cur; c != nil && c.obj.Key == key && c.obj.Bucket == bucket {
 					a.viewer.clear()
 				}
-				b.loadKeys()
+				b.reloadKeysThen(nil)
 			})
 		})
 }

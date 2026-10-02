@@ -87,6 +87,11 @@ Press **F1** (or `?`) at any time for help about what you are looking at.
 | Status line | messages (✔ success, ▲ warning, ✖ error), a spinner while Riak is busy, otherwise a hint for the current context; counts on the right |
 | Key bar | the keys that work right now |
 
+**While something loads**, the pane switches to what you opened right away
+and shows a spinner with the elapsed time (and, for key listings, how many
+keys have arrived so far). The panes are locked until the data arrives.
+**`Esc`** (or `←`) cancels the load and brings back the previous view.
+
 ### Connecting and server history
 
 Every server you connect to successfully is remembered. Starting
@@ -176,7 +181,7 @@ keys, so every F-key has a letter or `Ctrl` alternative.
 | `Enter` `→` | | open / expand |
 | `←` `Backspace` | | go up / collapse |
 | `/` | | filter the list · search the tree |
-| `Esc` | | clear filter · leave 2i results · close dialog |
+| `Esc` | `←` while loading | cancel a load · clear filter · leave 2i results · close dialog |
 | `s` | `c` | servers |
 | `i` | | 2i query |
 | `p` | | bucket properties |

@@ -172,20 +172,13 @@ func (a *App) indexQueryDialog() {
 			if to != "" {
 				desc = fmt.Sprintf("%s ∈ [%s … %s]", q.index, q.from, to)
 			}
-			a.async("running 2i query", 0, func(ctx context.Context) (any, error) {
+			b.runQuery(btype, bucket, desc, func(ctx context.Context) (*riak.IndexResult, error) {
 				return a.client.IndexQuery(ctx, btype, bucket, q.index, q.from, to, maxResults)
-			}, func(res any, err error) {
-				if err != nil {
-					return
-				}
+			}, func() {
 				if !strings.HasPrefix(q.index, "$") {
 					a.hist.AddIndex(a.client.Address(), k, q.index)
 					a.saveHistory()
 				}
-				a.viewer.dirtyGuard(func() {
-					b.btype, b.bucket = btype, bucket
-					b.showQueryResults(desc, res.(*riak.IndexResult))
-				})
 			})
 			return nil
 		},

@@ -23,3 +23,7 @@ uses [semantic versioning](https://semver.org/).
 - Dark, light and monochrome themes (`--theme`, `NO_COLOR`), mouse support,
   context-sensitive key bar and status hints, paged in-app help.
 - Addresses may be `host`, `host:port` or `http(s)://host:port/prefix`.
+- Visible, cancellable loading: opening a bucket type, bucket, key or 2i
+  query switches the pane immediately and shows a spinner, elapsed time and
+  live key count; input is locked until the data arrives, and `Esc` cancels
+  and restores the previous view.

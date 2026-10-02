@@ -23,6 +23,34 @@ type stubRiak struct {
 	mu   sync.Mutex
 	puts []*http.Request
 	body []string
+	// gates make GETs of a path block until the channel is closed (or the
+	// client gives up), simulating a slow cluster
+	gates map[string]chan struct{}
+}
+
+// gate makes GETs of path block until the returned release func is called.
+func (s *stubRiak) gate(path string) (release func()) {
+	ch := make(chan struct{})
+	s.mu.Lock()
+	if s.gates == nil {
+		s.gates = map[string]chan struct{}{}
+	}
+	s.gates[path] = ch
+	s.mu.Unlock()
+	var once sync.Once
+	return func() { once.Do(func() { close(ch) }) }
+}
+
+func (s *stubRiak) wait(r *http.Request) {
+	s.mu.Lock()
+	ch := s.gates[r.URL.Path]
+	s.mu.Unlock()
+	if ch != nil && r.Method == http.MethodGet {
+		select {
+		case <-ch:
+		case <-r.Context().Done():
+		}
+	}
 }
 
 func (s *stubRiak) handler() http.Handler {
@@ -54,7 +82,10 @@ func (s *stubRiak) handler() http.Handler {
 		w.Header().Set("x-riak-index-email_bin", "alice@example.com")
 		fmt.Fprint(w, `{"email":"alice@example.com","plan":{"name":"business"}}`)
 	})
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.wait(r)
+		mux.ServeHTTP(w, r)
+	})
 }
 
 // screenText flattens the simulation screen into a string for assertions.
@@ -294,4 +325,131 @@ func TestHelpOpensOnContextPage(t *testing.T) {
 	waitFor(t, sim, app, "Recent servers")
 	sim.InjectKey(tcell.KeyEscape, 0, tcell.ModNone)
 	waitFor(t, sim, app, "Bucket types")
+}
+
+// openDefaultType connects and opens the default type (fast), leaving the cursor
+// on the "users" bucket.
+func openDefaultType(t *testing.T, sim tcell.SimulationScreen, app *App) {
+	t.Helper()
+	waitFor(t, sim, app, "Connected to")
+	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	waitFor(t, sim, app, "default › buckets")
+	waitFor(t, sim, app, "▤ users")
+}
+
+func TestOpeningBucketNavigatesFirstAndLocksInput(t *testing.T) {
+	stub := &stubRiak{}
+	release := stub.gate("/buckets/users/keys")
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+	defer release()
+
+	app := New(srv.URL, Options{Timeout: 5 * time.Second})
+	sim := startApp(t, app)
+	openDefaultType(t, sim, app)
+
+	// the pane switches to the bucket at once and shows that it is loading
+	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	waitFor(t, sim, app, "users › keys")
+	waitFor(t, sim, app, "Loading keys…")
+	waitFor(t, sim, app, "Esc cancel")
+
+	waitFor(t, sim, app, "listing keys in users… · Esc to cancel")
+
+	// navigation is locked while loading. Injected keys travel through a
+	// different queue than waitFor's probes, so give them time to be handled
+	// before the response is released.
+	sim.InjectKey(tcell.KeyDown, 0, tcell.ModNone)
+	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	time.Sleep(300 * time.Millisecond)
+	waitFor(t, sim, app, "Loading keys…")
+
+	release()
+	waitFor(t, sim, app, "· alice")
+	waitFor(t, sim, app, "1 key in users")
+	// the locked Enter did not open anything
+	waitFor(t, sim, app, "browse and safely edit Riak KV")
+}
+
+func TestEscCancelsSlowListingAndRestoresView(t *testing.T) {
+	stub := &stubRiak{}
+	release := stub.gate("/buckets/users/keys")
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+	defer release()
+
+	app := New(srv.URL, Options{Timeout: 5 * time.Second})
+	sim := startApp(t, app)
+	openDefaultType(t, sim, app)
+
+	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	waitFor(t, sim, app, "Loading keys…")
+	sim.InjectKey(tcell.KeyEscape, 0, tcell.ModNone)
+	waitFor(t, sim, app, "Cancelled: loading keys")
+	waitFor(t, sim, app, "default › buckets")
+
+	// the bucket list is usable again, cursor still on "users"
+	release()
+	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	waitFor(t, sim, app, "· alice")
+}
+
+func TestKeyListingShowsProgress(t *testing.T) {
+	stub := &stubRiak{}
+	more := make(chan struct{})
+	mux := http.NewServeMux()
+	mux.Handle("/", stub.handler())
+	mux.HandleFunc("/buckets/users/keys", func(w http.ResponseWriter, r *http.Request) {
+		fl := w.(http.Flusher)
+		keys := make([]string, 1500)
+		for i := range keys {
+			keys[i] = fmt.Sprintf("%q", fmt.Sprintf("k%04d", i))
+		}
+		fmt.Fprintf(w, `{"keys":[%s]}`, strings.Join(keys, ","))
+		fl.Flush()
+		select { // stream stays open until the test says so
+		case <-more:
+		case <-r.Context().Done():
+		}
+		fmt.Fprint(w, `{"keys":["last"]}`)
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	app := New(srv.URL, Options{MaxKeys: 5000, Timeout: 5 * time.Second})
+	sim := startApp(t, app)
+	openDefaultType(t, sim, app)
+
+	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	waitFor(t, sim, app, "1,500 keys so far")
+	close(more)
+	waitFor(t, sim, app, "1501 keys in users")
+}
+
+func TestOpeningSlowKeyShowsLoadingInValuePane(t *testing.T) {
+	stub := &stubRiak{}
+	release := stub.gate("/buckets/users/keys/alice")
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+	defer release()
+
+	app := New(srv.URL, Options{Timeout: 5 * time.Second})
+	sim := startApp(t, app)
+	openDefaultType(t, sim, app)
+	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	waitFor(t, sim, app, "· alice")
+
+	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	waitFor(t, sim, app, "Loading alice…")
+	waitFor(t, sim, app, "cancel and go back")
+
+	// Esc goes back to what was shown before (the welcome panel)
+	sim.InjectKey(tcell.KeyEscape, 0, tcell.ModNone)
+	waitFor(t, sim, app, "Cancelled: loading alice")
+	waitFor(t, sim, app, "browse and safely edit Riak KV")
+
+	// and the key opens normally once the cluster answers
+	release()
+	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	waitFor(t, sim, app, "EDITABLE")
 }

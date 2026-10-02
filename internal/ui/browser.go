@@ -3,7 +3,9 @@ package ui
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -23,11 +25,13 @@ const (
 type rowKind int
 
 const (
-	rowItem      rowKind = iota // a type, bucket or key
-	rowUp                       // ".." — go up one level
-	rowOtherType                // prompt for a bucket type by name
-	rowMore                     // load the next page of keys
-	rowConnect                  // open the server picker (no connection yet)
+	rowItem        rowKind = iota // a type, bucket or key
+	rowUp                         // ".." — go up one level
+	rowOtherType                  // prompt for a bucket type by name
+	rowMore                       // load the next page of keys
+	rowConnect                    // open the server picker (no connection yet)
+	rowLoading                    // spinner + elapsed time while a load is pending
+	rowLoadingInfo                // progress / "Esc cancel" under the spinner
 )
 
 type row struct {
@@ -165,8 +169,13 @@ func (b *Browser) render() {
 	if b.level == levelTypes && b.app.client != nil && b.filterText == "" {
 		add(row{kind: rowOtherType})
 	}
-	if b.level == levelKeys && b.truncated && b.filterText == "" && !b.inQuery {
+	loading := b.app.pending != nil && b.app.pending.kind == pendingList
+	if b.level == levelKeys && b.truncated && b.filterText == "" && !b.inQuery && !loading {
 		add(row{kind: rowMore})
+	}
+	if loading {
+		add(row{kind: rowLoading})
+		add(row{kind: rowLoadingInfo})
 	}
 
 	b.layout.SetTitle(b.title(shown))
@@ -235,6 +244,8 @@ func (b *Browser) label(r row, selected bool) string {
 	case rowConnect:
 		glyph, text = "→", "connect to a server…"
 		textColour = tAccent()
+	case rowLoading, rowLoadingInfo:
+		return b.loadingLabel(r.kind)
 	default:
 		text = r.value
 		switch b.level {
@@ -327,6 +338,9 @@ func (b *Browser) activate(i int) {
 		return
 	}
 	r := b.rows[i]
+	if b.app.pending != nil || r.kind == rowLoading || r.kind == rowLoadingInfo {
+		return
+	}
 	switch r.kind {
 	case rowUp:
 		b.up()
@@ -339,7 +353,7 @@ func (b *Browser) activate(i int) {
 		return
 	case rowMore:
 		b.keyCap += b.app.opts.MaxKeys
-		b.loadKeys()
+		b.reloadKeysThen(nil)
 		return
 	}
 	switch b.level {
@@ -361,8 +375,7 @@ func (b *Browser) up() {
 			return
 		}
 		b.app.viewer.dirtyGuard(func() {
-			b.app.viewer.clear()
-			b.loadBuckets(b.btype)
+			b.loadBucketsThen(b.btype, b.app.viewer.clear)
 		})
 	case levelBuckets:
 		b.showTypes()
@@ -381,7 +394,7 @@ func (b *Browser) refresh() {
 		if b.inQuery {
 			b.exitQueryMode()
 		} else {
-			b.loadKeys()
+			b.reloadKeysThen(nil)
 		}
 	}
 }
@@ -428,16 +441,119 @@ func (b *Browser) forgetType() {
 
 // ---- data loading ----
 
+// browserState is what a navigation load may change; snapshot/restore put it
+// back when the load fails or is cancelled.
+type browserState struct {
+	level                 browserLevel
+	btype, bucket         string
+	items                 []string
+	truncated, inQuery    bool
+	keyCap                int
+	queryDesc, filterText string
+	cursor                int
+}
+
+// snapshot returns a function that restores the current view.
+func (b *Browser) snapshot() func() {
+	st := browserState{
+		level: b.level, btype: b.btype, bucket: b.bucket, items: b.items,
+		truncated: b.truncated, inQuery: b.inQuery, keyCap: b.keyCap,
+		queryDesc: b.queryDesc, filterText: b.filterText, cursor: b.list.GetCurrentItem(),
+	}
+	return func() {
+		b.level, b.btype, b.bucket, b.items = st.level, st.btype, st.bucket, st.items
+		b.truncated, b.inQuery, b.keyCap = st.truncated, st.inQuery, st.keyCap
+		b.queryDesc, b.filterText, b.filterMode = st.queryDesc, st.filterText, false
+		b.render()
+		if st.cursor >= 0 && st.cursor < b.list.GetItemCount() {
+			b.list.SetCurrentItem(st.cursor)
+		}
+		b.restyleAll()
+	}
+}
+
+// loadingLabel renders the loading rows: a spinner with elapsed time, then
+// progress (key listings) and how to cancel. Both stay blank for the first
+// loadingDelay so instant responses do not flash.
+func (b *Browser) loadingLabel(kind rowKind) string {
+	p := b.app.pending
+	if p == nil {
+		return ""
+	}
+	d, visible := p.elapsed()
+	if !visible {
+		return ""
+	}
+	if kind == rowLoading {
+		return " " + tAccent() + b.app.status.spinner() + reset + " " + tText() + tview.Escape(p.desc) + "…" + reset +
+			"  " + tMuted() + fmt.Sprintf("%.1f s", d.Seconds()) + reset
+	}
+	info := ""
+	if n := p.progress.Load(); n > 0 {
+		info = tText() + formatCount(int(n)) + " keys so far" + reset + tMuted() + " · " + reset
+	}
+	return "   " + info + tAccent() + "Esc" + reset + tMuted() + " cancel" + reset
+}
+
+// renderLoading refreshes the loading rows (called before every draw while
+// a list load is pending; the status spinner ticks the redraws).
+func (b *Browser) renderLoading() {
+	for i, r := range b.rows {
+		if (r.kind == rowLoading || r.kind == rowLoadingInfo) && i < b.list.GetItemCount() {
+			if want := b.loadingLabel(r.kind); want != b.mainText(i) {
+				b.list.SetItemText(i, want, "")
+			}
+		}
+	}
+}
+
+func (b *Browser) mainText(i int) string {
+	main, _ := b.list.GetItemText(i)
+	return main
+}
+
+// startListLoad switches the pane to the target view at once ("navigate
+// first"): mutate applies the target state, then the pane renders with
+// loading rows until the data arrives. It returns the pending load to pass
+// to asyncPending, or nil if another call is still running.
+func (b *Browser) startListLoad(desc string, keepCursor bool, mutate func()) *pendingLoad {
+	if b.app.busy() {
+		return nil
+	}
+	p := newPending(pendingList, desc, b.snapshot())
+	b.app.pending = p // render needs it; asyncPending re-sets it
+	p.started = time.Now()
+	mutate()
+	b.filterText, b.filterMode = "", false
+	if keepCursor {
+		b.render()
+	} else {
+		b.renderFresh()
+	}
+	return p
+}
+
 func (b *Browser) loadBuckets(btype string) {
-	b.app.async("listing buckets in "+orDefault(btype), 0, func(ctx context.Context) (any, error) {
+	b.loadBucketsThen(btype, nil)
+}
+
+// loadBucketsThen opens a bucket type; then (may be nil) runs on success.
+func (b *Browser) loadBucketsThen(btype string, then func()) {
+	p := b.startListLoad("Loading buckets", false, func() {
+		b.level, b.btype, b.bucket = levelBuckets, btype, ""
+		b.items, b.inQuery, b.truncated = nil, false, false
+	})
+	if p == nil {
+		return
+	}
+	b.app.asyncPending(p, "listing buckets in "+orDefault(btype), 0, func(ctx context.Context) (any, error) {
 		return b.app.client.ListBuckets(ctx, btype)
 	}, func(res any, err error) {
 		if err != nil {
 			return
 		}
 		buckets := res.([]string)
-		b.level, b.btype, b.bucket = levelBuckets, btype, ""
-		b.items, b.filterText, b.filterMode, b.inQuery = buckets, "", false, false
+		b.items = buckets
 		b.renderFresh()
 		if btype != "default" && btype != "" {
 			if b.app.hist.AddBucketType(b.app.client.Address(), btype) {
@@ -449,35 +565,64 @@ func (b *Browser) loadBuckets(btype string) {
 		} else {
 			b.app.status.Success("%s in type %q", pluralize(len(buckets), "bucket", "buckets"), orDefault(btype))
 		}
+		if then != nil {
+			then()
+		}
 	})
 }
 
 func (b *Browser) enterBucket(bucket string) {
-	b.bucket = bucket
-	b.keyCap = b.app.opts.MaxKeys
-	b.fetchProps()
-	b.loadKeys()
+	b.loadKeysWith(false, nil, func() {
+		b.level, b.bucket, b.keyCap = levelKeys, bucket, b.app.opts.MaxKeys
+		b.items, b.truncated = nil, false
+	})
 }
 
-func (b *Browser) loadKeys() { b.loadKeysThen(nil) }
+// loadKeys re-lists the open bucket from scratch (e.g. leaving 2i results).
+func (b *Browser) loadKeys() {
+	b.loadKeysWith(false, nil, func() {
+		b.items, b.truncated = nil, false
+	})
+}
 
-// loadKeysThen lists keys and, on success, runs then (may be nil).
-func (b *Browser) loadKeysThen(then func()) {
+// reloadKeysThen re-lists the open bucket keeping the current keys visible
+// (reload, paging, after create/delete); then (may be nil) runs on success.
+func (b *Browser) reloadKeysThen(then func()) { b.loadKeysWith(true, then, nil) }
+
+// loadKeysWith lists keys of b.bucket after mutate (may be nil) has set up
+// the target view; keep leaves the current items and cursor in place while
+// loading.
+func (b *Browser) loadKeysWith(keep bool, then func(), mutate func()) {
+	p := b.startListLoad("Loading keys", keep, func() {
+		if mutate != nil {
+			mutate()
+		}
+		b.level, b.inQuery, b.queryDesc = levelKeys, false, ""
+	})
+	if p == nil {
+		return
+	}
+	b.fetchProps()
 	btype, bucket, keyCap := b.btype, b.bucket, b.keyCap
-	b.app.async("listing keys in "+bucket, 4*b.app.client.Timeout(), func(ctx context.Context) (any, error) {
-		keys, truncated, err := b.app.client.ListKeys(ctx, btype, bucket, keyCap)
+	b.app.asyncPending(p, "listing keys in "+bucket, 4*b.app.client.Timeout(), func(ctx context.Context) (any, error) {
+		keys, truncated, err := b.app.client.ListKeysProgress(ctx, btype, bucket, keyCap, func(n int) {
+			p.progress.Store(int64(n))
+		})
 		return []any{keys, truncated}, err
 	}, func(res any, err error) {
 		if err != nil {
 			return
 		}
 		pair := res.([]any)
-		b.level = levelKeys
 		b.items, b.truncated = pair[0].([]string), pair[1].(bool)
-		b.filterText, b.filterMode, b.inQuery = "", false, false
-		b.renderFresh()
+		if keep {
+			b.render()
+			b.restyleAll()
+		} else {
+			b.renderFresh()
+		}
 		if b.truncated {
-			b.app.status.Info("Showing the first %d keys of %s; select “load next” for more", keyCap, bucket)
+			b.app.status.Info("Showing the first %s keys of %s; select “load next” for more", formatCount(keyCap), bucket)
 		} else {
 			b.app.status.Success("%s in %s", pluralize(len(b.items), "key", "keys"), bucket)
 		}
@@ -485,6 +630,15 @@ func (b *Browser) loadKeysThen(then func()) {
 			then()
 		}
 	})
+}
+
+// formatCount renders 12345 as "12,345".
+func formatCount(n int) string {
+	s := strconv.Itoa(n)
+	for i := len(s) - 3; i > 0; i -= 3 {
+		s = s[:i] + "," + s[i:]
+	}
+	return s
 }
 
 // fetchProps loads bucket props in the background; they route CRDT buckets
@@ -512,25 +666,41 @@ func (b *Browser) fetchProps() {
 	}()
 }
 
-// showQueryResults swaps the key list for 2i query results.
-func (b *Browser) showQueryResults(desc string, res *riak.IndexResult) {
-	b.level = levelKeys
-	if b.keyCap < b.app.opts.MaxKeys {
-		b.keyCap = b.app.opts.MaxKeys // Esc returns to a bounded key listing
+// runQuery swaps the key list for the results of a 2i query on
+// btype/bucket, navigating first like the other list loads; then (may be
+// nil) runs on success.
+func (b *Browser) runQuery(btype, bucket, desc string, fn func(ctx context.Context) (*riak.IndexResult, error), then func()) {
+	p := b.startListLoad("Running 2i query", false, func() {
+		b.level, b.btype, b.bucket = levelKeys, btype, bucket
+		if b.keyCap < b.app.opts.MaxKeys {
+			b.keyCap = b.app.opts.MaxKeys // Esc returns to a bounded key listing
+		}
+		b.inQuery, b.queryDesc = true, desc
+		b.items, b.truncated = nil, false
+	})
+	if p == nil {
+		return
 	}
-	b.inQuery, b.queryDesc = true, desc
-	b.items, b.truncated, b.filterText, b.filterMode = res.Keys, false, "", false
-	b.renderFresh()
-	note := ""
-	if res.Continuation != "" {
-		note = " (more exist; raise “Max results” to see them)"
-	}
-	b.app.status.Success("2i %s: %s%s", desc, pluralize(len(res.Keys), "key", "keys"), note)
+	b.app.asyncPending(p, "running 2i query", 0, func(ctx context.Context) (any, error) {
+		return fn(ctx)
+	}, func(r any, err error) {
+		if err != nil {
+			return
+		}
+		res := r.(*riak.IndexResult)
+		b.items = res.Keys
+		b.renderFresh()
+		note := ""
+		if res.Continuation != "" {
+			note = " (more exist; raise “Max results” to see them)"
+		}
+		b.app.status.Success("2i %s: %s%s", desc, pluralize(len(res.Keys), "key", "keys"), note)
+		if then != nil {
+			then()
+		}
+	})
 }
 
-func (b *Browser) exitQueryMode() {
-	b.inQuery, b.queryDesc = false, ""
-	b.loadKeys()
-}
+func (b *Browser) exitQueryMode() { b.loadKeys() }
 
 func bucketKey(btype, bucket string) string { return orDefault(btype) + "/" + bucket }

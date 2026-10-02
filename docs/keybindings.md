@@ -19,6 +19,18 @@ Terminal and iTerm2 in particular) intercept F-keys.
 
 Letter shortcuts are disabled while you type in a filter or search.
 
+## While a list or value is loading
+
+Opening a bucket type, bucket, key or 2i query switches the pane at once and
+shows a spinner, the elapsed time and (for key listings) the number of keys
+received so far. Until the data arrives, only these keys work:
+
+| Key | Action |
+|-----|--------|
+| `Esc`, `←`, `Backspace` | cancel the load and go back to the previous view |
+| `F1`, `?` | help |
+| `F10`, `q`, `Ctrl-C` | quit |
+
 ## List pane (bucket types, buckets, keys)
 
 | Key | Action |

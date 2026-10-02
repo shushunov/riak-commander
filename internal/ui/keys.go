@@ -19,6 +19,9 @@ func (a *App) handleKey(ev *tcell.EventKey) *tcell.EventKey {
 	if a.modalOpen {
 		return ev // modals manage their own keys (incl. Esc)
 	}
+	if a.pending != nil {
+		return a.handlePendingKey(ev)
+	}
 	typing := a.browser.filterMode || a.viewer.searchMode
 
 	switch ev.Key() {
@@ -106,6 +109,21 @@ func (a *App) handleKey(ev *tcell.EventKey) *tcell.EventKey {
 	return nil
 }
 
+// handlePendingKey is the key policy while a navigation load is in flight:
+// the panes are about to be replaced, so only cancel, help and quit work.
+func (a *App) handlePendingKey(ev *tcell.EventKey) *tcell.EventKey {
+	switch {
+	case ev.Key() == tcell.KeyEscape, ev.Key() == tcell.KeyLeft,
+		ev.Key() == tcell.KeyBackspace, ev.Key() == tcell.KeyBackspace2:
+		a.cancelPending()
+	case ev.Key() == tcell.KeyF1, ev.Rune() == '?':
+		a.helpModal()
+	case ev.Key() == tcell.KeyF10, ev.Key() == tcell.KeyCtrlC, ev.Rune() == 'q':
+		a.quit()
+	}
+	return nil // everything else would act on content about to be replaced
+}
+
 func (a *App) editSelected() {
 	if jn := a.viewer.selectedNode(); jn != nil {
 		a.editNode(jn)
@@ -150,6 +168,9 @@ func (a *App) deleteItem() {
 // keyHints returns the context-sensitive key bar entries, most important
 // first (the bar is truncated on narrow terminals).
 func (a *App) keyHints() []KeyHint {
+	if a.pending != nil {
+		return []KeyHint{{"Esc", "Cancel"}, {"F1", "Help"}, {"q", "Quit"}}
+	}
 	h := []KeyHint{{"F1", "Help"}}
 	b := a.browser
 	switch {
@@ -191,6 +212,8 @@ func (a *App) contextHint() string {
 	switch {
 	case a.conn == connConnecting:
 		return "Connecting…"
+	case a.pending != nil:
+		return a.pending.desc + "… Esc cancels and goes back"
 	case a.client == nil:
 		return "Not connected. Press s to choose a server, or F1 for help."
 	case b.filterMode:

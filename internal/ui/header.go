@@ -74,7 +74,9 @@ func (a *App) breadcrumb() []string {
 			out = append(out, "2i "+b.queryDesc)
 		}
 	}
-	if c := a.viewer.cur; c != nil && c.obj.Bucket == b.bucket && b.level == levelKeys {
+	if p := a.pending; p != nil && p.kind == pendingValue {
+		out = append(out, a.viewer.loadingKey)
+	} else if c := a.viewer.cur; c != nil && c.obj.Bucket == b.bucket && b.level == levelKeys {
 		out = append(out, c.obj.Key)
 	}
 	return out

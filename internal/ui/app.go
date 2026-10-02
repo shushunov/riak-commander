@@ -11,6 +11,8 @@ package ui
 import (
 	"context"
 	"sort"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/gdamore/tcell/v2"
@@ -63,6 +65,8 @@ type App struct {
 	failedAddress string // last address that failed, prefilled in the picker
 
 	loading   bool
+	run       *asyncRun    // the in-flight async call, if any
+	pending   *pendingLoad // the in-flight navigation load, if any
 	modalOpen bool
 	lastFocus tview.Primitive
 
@@ -119,6 +123,14 @@ func New(address string, opts Options) *App {
 	a.tv.SetRoot(a.pages, true)
 	a.tv.EnableMouse(true)
 	a.tv.SetInputCapture(a.handleKey)
+	// While a navigation load is pending the panes are locked; clicks would
+	// otherwise act on content that is about to be replaced.
+	a.tv.SetMouseCapture(func(ev *tcell.EventMouse, action tview.MouseAction) (*tcell.EventMouse, tview.MouseAction) {
+		if a.pending != nil && !a.modalOpen {
+			return nil, action
+		}
+		return ev, action
+	})
 	// Chrome (header, borders, key bar) is derived from state right before
 	// every draw, so no code path can forget to refresh it. The callback runs
 	// under the application lock: it must not call a.tv methods.
@@ -247,11 +259,71 @@ func (a *App) isRememberedType(btype string) bool {
 	return false
 }
 
+// pendingKind says which pane a navigation load is filling.
+type pendingKind int
+
+const (
+	pendingList  pendingKind = iota + 1 // the browser list (buckets, keys, 2i results)
+	pendingValue                        // the value pane
+)
+
+// loadingDelay hides the in-pane loading indicator for loads that finish
+// almost instantly, so fast clusters do not flash; input is locked at once.
+const loadingDelay = 150 * time.Millisecond
+
+// pendingLoad is a navigation load in flight. The pane has already switched
+// to its target ("navigate first") and shows a loading row; restore puts the
+// previous view back if the load fails or is cancelled.
+type pendingLoad struct {
+	kind     pendingKind
+	desc     string // "Loading keys"
+	started  time.Time
+	progress atomic.Int64 // items received so far (key listings), set by the worker
+	restore  func()
+}
+
+// elapsed reports how long the load has run and whether the loading
+// indicator should be visible yet.
+func (p *pendingLoad) elapsed() (time.Duration, bool) {
+	d := time.Since(p.started)
+	return d, d >= loadingDelay
+}
+
+// asyncRun is one in-flight async call.
+type asyncRun struct {
+	cancel    context.CancelFunc
+	cancelled bool
+}
+
+// busy reports (and tells the user) whether another call is in flight.
+// Navigation code checks it before switching panes.
+func (a *App) busy() bool {
+	if !a.loading {
+		return false
+	}
+	if a.pending != nil {
+		a.status.Info("Still loading. Press Esc to cancel")
+	} else {
+		a.status.Warn("Busy: %s is still in progress", a.status.busyDesc)
+	}
+	return true
+}
+
 // async runs a network call off the UI goroutine and applies the result back
 // on it. A single in-flight call at a time keeps pane state simple.
 func (a *App) async(desc string, timeout time.Duration, fn func(ctx context.Context) (any, error), done func(res any, err error)) {
-	if a.loading {
-		a.status.Warn("Busy: %s is still in progress", a.status.busyDesc)
+	a.asyncPending(nil, desc, timeout, fn, done)
+}
+
+// asyncPending is async for navigation loads: p (may be nil) marks the
+// target pane as loading, which locks input until the call finishes or the
+// user cancels it with Esc (see cancelPending). On failure p.restore runs
+// before done.
+func (a *App) asyncPending(p *pendingLoad, desc string, timeout time.Duration, fn func(ctx context.Context) (any, error), done func(res any, err error)) {
+	if a.busy() {
+		if p != nil && p.restore != nil {
+			p.restore()
+		}
 		return
 	}
 	a.loading = true
@@ -262,19 +334,56 @@ func (a *App) async(desc string, timeout time.Duration, fn func(ctx context.Cont
 			timeout = a.client.Timeout()
 		}
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	run := &asyncRun{cancel: cancel}
+	a.run = run
+	if p != nil {
+		p.started = time.Now()
+		a.pending = p
+	}
 	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		res, err := fn(ctx)
 		a.tv.QueueUpdateDraw(func() {
 			a.loading = false
+			a.run = nil
 			a.status.stopBusy()
+			if run.cancelled {
+				return // cancelPending already restored the view and said so
+			}
+			if a.pending == p {
+				a.pending = nil
+			}
 			if err != nil {
 				a.status.Err(err)
+				if p != nil && p.restore != nil {
+					p.restore()
+				}
 			}
 			done(res, err)
 		})
 	}()
+}
+
+// cancelPending aborts the in-flight navigation load and immediately puts the
+// previous view back; the late result, if any, is discarded.
+func (a *App) cancelPending() {
+	p, run := a.pending, a.run
+	if p == nil || run == nil {
+		return
+	}
+	run.cancelled = true
+	run.cancel()
+	a.pending = nil
+	if p.restore != nil {
+		p.restore()
+	}
+	a.status.Info("Cancelled: %s", strings.ToLower(p.desc))
+}
+
+// newPending starts describing a navigation load; pass it to asyncPending.
+func newPending(kind pendingKind, desc string, restore func()) *pendingLoad {
+	return &pendingLoad{kind: kind, desc: desc, restore: restore}
 }
 
 // ---- focus ----
@@ -318,8 +427,18 @@ func (a *App) syncChrome() {
 	}
 	border(a.browser.layout.Box, bFocus)
 	border(a.viewer.layout.Box, vFocus)
-	a.browser.list.SetSelectedStyle(selectedStyle(bFocus))
-	a.viewer.syncSelection(vFocus)
+	if p := a.pending; p != nil && p.kind == pendingList {
+		// no highlight while loading: the list is inert until data arrives
+		a.browser.list.SetSelectedStyle(tcell.StyleDefault.Background(th.Bg).Foreground(th.Text))
+		a.browser.renderLoading()
+	} else {
+		a.browser.list.SetSelectedStyle(selectedStyle(bFocus))
+	}
+	if p := a.pending; p != nil && p.kind == pendingValue {
+		a.viewer.renderLoading()
+	} else {
+		a.viewer.syncSelection(vFocus)
+	}
 
 	a.header.render(a)
 	a.status.setKeys(a.keyHints())
@@ -332,6 +451,8 @@ func (a *App) infoText() string {
 	switch {
 	case a.client == nil:
 		return ""
+	case a.pending != nil && a.pending.kind == pendingList:
+		return "" // counts of the old or empty list would mislead
 	case b.level == levelKeys && b.inQuery:
 		return pluralize(len(b.items), "result", "results")
 	case b.level == levelKeys:

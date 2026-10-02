@@ -59,6 +59,9 @@ type Viewer struct {
 	selNode    *tview.TreeNode // node currently rendered without colour tags
 	selFocused bool
 
+	loadingKey  string // key being loaded while a value load is pending
+	loadingLast string // last rendered loading text
+
 	searchMode bool
 	search     string
 }
@@ -176,10 +179,17 @@ type loadResult struct {
 // datatypes endpoint. Props are fetched on demand if not cached yet.
 func (v *Viewer) doLoad(btype, bucket, key string) {
 	a := v.app
+	if a.busy() {
+		return
+	}
 	pkey := btype + "/" + bucket
 	props := a.browser.propsCache[pkey]
 	client := a.client
-	a.async("loading "+key, 0, func(ctx context.Context) (any, error) {
+	// navigate first: the pane shows the key loading right away; on failure
+	// or Esc the previous value (or the empty state) comes back
+	p := newPending(pendingValue, "Loading "+key, func() { v.render() })
+	v.beginLoading(key)
+	a.asyncPending(p, "loading "+key, 0, func(ctx context.Context) (any, error) {
 		res := loadResult{props: props}
 		if res.props == nil {
 			if p, err := client.BucketProps(ctx, btype, bucket); err == nil {
@@ -252,6 +262,36 @@ func (v *Viewer) reloadCurrent() {
 	}
 	o := v.cur.obj
 	v.dirtyGuard(func() { v.doLoad(o.BucketType, o.Bucket, o.Key) })
+}
+
+// beginLoading switches the pane to the key being loaded. It runs on the
+// event goroutine (not in the draw hook) because switching pages may move
+// focus.
+func (v *Viewer) beginLoading(key string) {
+	v.loadingKey, v.loadingLast = key, ""
+	v.layout.SetTitle(" " + tview.Escape(key) + " ")
+	v.layout.ResizeItem(v.header, 0, 0)
+	v.text.SetText("")
+	v.body.SwitchToPage("text")
+}
+
+// renderLoading shows a spinner and the elapsed time for the key being
+// loaded. It runs before every draw while a value load is pending, so it
+// only updates text. The pane stays blank for the first loadingDelay so
+// instant loads do not flash.
+func (v *Viewer) renderLoading() {
+	p := v.app.pending
+	d, visible := p.elapsed()
+	if !visible {
+		return
+	}
+	text := "\n\n  " + tAccent() + v.app.status.spinner() + reset + " " + tText() + tview.Escape(p.desc) + "…" + reset +
+		"  " + tMuted() + fmt.Sprintf("%.1f s", d.Seconds()) + reset +
+		"\n\n  " + tAccent() + "Esc" + reset + tMuted() + " cancel and go back" + reset
+	if text != v.loadingLast {
+		v.loadingLast = text
+		v.text.SetText(text)
+	}
 }
 
 // ---- rendering ----

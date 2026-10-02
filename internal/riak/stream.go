@@ -12,6 +12,13 @@ import (
 // `limit` keys have been collected (limit <= 0 means unlimited). Returns the
 // keys read and whether the listing was truncated by the limit.
 func (c *Client) ListKeys(ctx context.Context, btype, bucket string, limit int) (keys []string, truncated bool, err error) {
+	return c.ListKeysProgress(ctx, btype, bucket, limit, nil)
+}
+
+// ListKeysProgress is ListKeys with a progress callback: onProgress (may be
+// nil) receives the number of keys read so far after every streamed chunk.
+// It runs on the calling goroutine.
+func (c *Client) ListKeysProgress(ctx context.Context, btype, bucket string, limit int, onProgress func(total int)) (keys []string, truncated bool, err error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel() // aborts the in-flight body read once we return early
 
@@ -42,6 +49,13 @@ func (c *Client) ListKeys(ctx context.Context, btype, bucket string, limit int) 
 			return keys, false, err
 		}
 		keys = append(keys, chunk.Keys...)
+		if onProgress != nil {
+			n := len(keys)
+			if limit > 0 && n > limit {
+				n = limit
+			}
+			onProgress(n)
+		}
 		if limit > 0 && len(keys) >= limit {
 			return keys[:limit], true, nil
 		}

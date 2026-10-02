@@ -117,6 +117,10 @@ func (s *StatusBar) startBusy(desc string) {
 	s.renderLeft()
 }
 
+// spinner is the current spinner frame; panes showing a loading state use
+// it so every indicator on screen turns in step.
+func (s *StatusBar) spinner() string { return spinnerFrames[s.frame%len(spinnerFrames)] }
+
 func (s *StatusBar) stopBusy() {
 	if s.busyStop != nil {
 		close(s.busyStop)
@@ -130,8 +134,11 @@ func (s *StatusBar) renderLeft() {
 	var text string
 	switch {
 	case s.busyDesc != "":
-		text = tAccent() + spinnerFrames[s.frame%len(spinnerFrames)] + reset + " " +
+		text = tAccent() + s.spinner() + reset + " " +
 			tText() + tview.Escape(s.busyDesc) + "…" + reset
+		if s.app.pending != nil {
+			text += tMuted() + " · " + reset + tAccent() + "Esc" + reset + tMuted() + " to cancel" + reset
+		}
 	case s.msg != "":
 		icon, colour := "ℹ", tText()
 		switch s.sev {

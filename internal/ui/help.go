@@ -29,7 +29,7 @@ Enter  → | open the selected item
 ←  Backspace | go back up a level
 Tab | switch between the list and the value pane
 / | filter the list (or search inside a JSON value)
-Esc | clear a filter, leave 2i results, close dialogs
+Esc | cancel a load, clear a filter, leave 2i results, close dialogs
 s | servers: connect, switch, recent history
 F1  ? | this help (Tab / → next page, ← previous, 1–8 jump)
 q  F10  Ctrl-C | quit (asks first if there are unsaved edits)
@@ -81,6 +81,12 @@ production cluster.
 # Keys
 Key listings stream and stop after --max-keys keys (default 1000). Select
 "load next … keys" at the bottom to fetch more.
+
+# While something loads
+The pane switches to what you opened right away and shows a spinner, the
+elapsed time and, for key listings, how many keys have arrived so far. The
+list is locked until the data is there. Esc (or ←) cancels the load and
+brings back what you were looking at.
 
 / | filter: type to narrow the list, Enter keeps it, Esc clears it
 p | bucket properties (n_val, allow_mult, backend, datatype, …)
@@ -182,7 +188,7 @@ i | 2i query
 p | bucket properties
 r | rename a field
 / | filter / search
-Esc | clear filter, leave 2i results, close dialogs
+Esc | cancel a load, clear filter, leave 2i results, close dialogs
 j  k | down / up in lists
 
 # Mouse

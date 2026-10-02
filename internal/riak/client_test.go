@@ -225,6 +225,25 @@ func TestListKeysStreamTruncates(t *testing.T) {
 	}
 }
 
+func TestListKeysProgressReportsRunningTotal(t *testing.T) {
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"keys":["a","b"]}{"keys":[]}{"keys":["c","d","e"]}`)
+	}))
+	var got []int
+	keys, truncated, err := c.ListKeysProgress(context.Background(), "", "customers", 4, func(n int) {
+		got = append(got, n)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 4 || !truncated {
+		t.Fatalf("got %d keys truncated=%v, want 4/true", len(keys), truncated)
+	}
+	if want := []int{2, 2, 4}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("progress = %v, want %v (capped at the limit)", got, want)
+	}
+}
+
 func TestListKeysStreamComplete(t *testing.T) {
 	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"keys":["a","b"]}{"keys":[]}{"keys":["c"]}`)
