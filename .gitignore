@@ -1,0 +1,5 @@
+/riak-commander
+/dist/
+*.test
+*.out
+.DS_Store
