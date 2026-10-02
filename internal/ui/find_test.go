@@ -215,9 +215,7 @@ func TestFindExistsHidesValueField(t *testing.T) {
 	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone) // exists
 	time.Sleep(300 * time.Millisecond)
 	waitFor(t, sim, app, "Match exists")  // label column width depends on the fields shown
-	if screenHas(sim, app, "│  Value ") { // the dialog row, not the value pane's title
-		t.Fatal("Value field shown for Match: exists")
-	}
+	waitForAbsent(t, sim, app, "│  Value ") // the dialog row, not the value pane's title
 }
 
 func TestFindRiakSearchMode(t *testing.T) {

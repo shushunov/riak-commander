@@ -131,6 +131,20 @@ func waitFor(t *testing.T, sim tcell.SimulationScreen, app *App, substr string) 
 	t.Fatalf("screen never showed %q; screen:\n%s", substr, txt)
 }
 
+// waitForAbsent waits until the screen no longer shows substr.
+func waitForAbsent(t *testing.T, sim tcell.SimulationScreen, app *App, substr string) {
+	t.Helper()
+	for i := 0; i < 150; i++ {
+		if !screenHas(sim, app, substr) {
+			return
+		}
+		time.Sleep(30 * time.Millisecond)
+	}
+	var txt string
+	app.tv.QueueUpdateDraw(func() { txt = screenText(sim) })
+	t.Fatalf("screen still shows %q; screen:\n%s", substr, txt)
+}
+
 // startApp runs app on a 120x40 simulation screen until the test ends.
 func startApp(t *testing.T, app *App) tcell.SimulationScreen {
 	t.Helper()
@@ -479,8 +493,8 @@ func TestIndexQueryShowsToFieldOnlyInRangeMode(t *testing.T) {
 	// exact mode (the default): one value field, no To
 	typeText(sim, "i")
 	waitFor(t, sim, app, "2i query on default/users")
-	waitFor(t, sim, app, "Value")
-	if screenHas(sim, app, " To ") {
+	waitFor(t, sim, app, "│  Value ") // the dialog row, not the value pane's title
+	if screenHas(sim, app, "│  To ") {
 		t.Fatal("To field shown in exact mode")
 	}
 
@@ -490,8 +504,8 @@ func TestIndexQueryShowsToFieldOnlyInRangeMode(t *testing.T) {
 	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone) // open the list
 	sim.InjectKey(tcell.KeyDown, 0, tcell.ModNone)
 	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone) // pick "range"
-	waitFor(t, sim, app, "From")
-	waitFor(t, sim, app, " To ")
+	waitFor(t, sim, app, "│  From ")
+	waitFor(t, sim, app, "│  To ")
 
 	sim.InjectKey(tcell.KeyTab, 0, tcell.ModNone) // → From
 	typeText(sim, "a")
@@ -503,18 +517,17 @@ func TestIndexQueryShowsToFieldOnlyInRangeMode(t *testing.T) {
 	// the last (range) query is remembered, To included
 	typeText(sim, "i")
 	waitFor(t, sim, app, "2i query on default/users")
-	waitFor(t, sim, app, " To ")
+	waitFor(t, sim, app, "│  To ")
 
 	// back to exact: To disappears again
 	sim.InjectKey(tcell.KeyBacktab, 0, tcell.ModNone) // From → Mode
 	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
 	sim.InjectKey(tcell.KeyUp, 0, tcell.ModNone)
 	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone) // pick "exact"
-	waitFor(t, sim, app, "Value")
-	time.Sleep(100 * time.Millisecond)
-	if screenHas(sim, app, " To ") {
-		t.Fatal("To field still shown after switching back to exact")
-	}
+	// injected keys and screen probes travel through different queues, so
+	// poll until the layout has changed rather than checking once
+	waitFor(t, sim, app, "│  Value ")
+	waitForAbsent(t, sim, app, "│  To ")
 }
 
 func TestFriendlyConnErrorRecognisesRefusedOnAllPlatforms(t *testing.T) {
