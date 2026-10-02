@@ -214,7 +214,7 @@ func TestFindExistsHidesValueField(t *testing.T) {
 	}
 	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone) // exists
 	time.Sleep(300 * time.Millisecond)
-	waitFor(t, sim, app, "Match exists")  // label column width depends on the fields shown
+	waitFor(t, sim, app, "Match exists")    // label column width depends on the fields shown
 	waitForAbsent(t, sim, app, "│  Value ") // the dialog row, not the value pane's title
 }
 
