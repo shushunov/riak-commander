@@ -6,6 +6,8 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-10-02
+
 ### Added
 
 - First public version of Riak Commander.
@@ -32,3 +34,6 @@ uses [semantic versioning](https://semver.org/).
   query switches the pane immediately and shows a spinner, elapsed time and
   live key count; input is locked until the data arrives, and `Esc` cancels
   and restores the previous view.
+
+[Unreleased]: https://github.com/shushunov/riak-commander/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/shushunov/riak-commander/releases/tag/v0.1.0
