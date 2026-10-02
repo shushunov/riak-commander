@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -513,5 +514,16 @@ func TestIndexQueryShowsToFieldOnlyInRangeMode(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	if screenHas(sim, app, " To ") {
 		t.Fatal("To field still shown after switching back to exact")
+	}
+}
+
+func TestFriendlyConnErrorRecognisesRefusedOnAllPlatforms(t *testing.T) {
+	for _, msg := range []string{
+		`Get "http://h:1/ping": dial tcp h:1: connect: connection refused`,
+		`Get "http://h:1/ping": dial tcp h:1: connectex: No connection could be made because the target machine actively refused it.`,
+	} {
+		if got := friendlyConnError("h:1", errors.New(msg)); !strings.Contains(got, "Nothing is listening on h:1") {
+			t.Errorf("%q → %q", msg, got)
+		}
 	}
 }

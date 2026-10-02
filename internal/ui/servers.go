@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"syscall"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -273,6 +274,17 @@ func (a *App) labelServer(e history.Entry, errMsg string) {
 	})
 }
 
+// isConnRefused reports a refused TCP connection. Unix reports ECONNREFUSED;
+// Windows reports WSAECONNREFUSED ("…the target machine actively refused
+// it"), which errors.Is does not map, hence the text checks.
+func isConnRefused(err error) bool {
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return true
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "connection refused") || strings.Contains(msg, "actively refused")
+}
+
 // friendlyConnError explains a failed ping in terms of what to check.
 func friendlyConnError(addr string, err error) string {
 	var dnsErr *net.DNSError
@@ -282,7 +294,7 @@ func friendlyConnError(addr string, err error) string {
 		return fmt.Sprintf("Host not found for %s. Check the spelling, DNS or VPN.", addr)
 	case errors.Is(err, context.DeadlineExceeded) || strings.Contains(msg, "timeout"):
 		return fmt.Sprintf("No answer from %s within %s. Check the address, VPN and firewall.", addr, connectTimeout)
-	case strings.Contains(msg, "connection refused"):
+	case isConnRefused(err):
 		return fmt.Sprintf("Nothing is listening on %s. Is Riak running, and is this its HTTP port (default 8098)?", addr)
 	case strings.Contains(msg, "riak:"):
 		return fmt.Sprintf("%s answered, but not like Riak's HTTP API (%s). Check the port and any path prefix.", addr, strings.TrimPrefix(msg, "riak: "))
