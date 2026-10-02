@@ -314,7 +314,7 @@ func (a *App) deleteNode() {
 // newKeyDialog creates a new object in the current bucket (F7 at key level).
 func (a *App) newKeyDialog() {
 	b := a.browser
-	if b.level != levelKeys || b.inQuery {
+	if b.level != levelKeys || b.inResults {
 		a.status.Info("Open a bucket's key list to create a key")
 		return
 	}

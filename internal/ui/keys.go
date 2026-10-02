@@ -73,6 +73,12 @@ func (a *App) handleKey(ev *tcell.EventKey) *tcell.EventKey {
 		if a.client != nil {
 			a.indexQueryDialog()
 		}
+	case 'f':
+		if a.client != nil && a.browserFocused() {
+			a.findDialog()
+		} else {
+			return ev
+		}
 	case 'p':
 		if a.client != nil {
 			a.propsModal()
@@ -168,8 +174,12 @@ func (a *App) deleteItem() {
 // keyHints returns the context-sensitive key bar entries, most important
 // first (the bar is truncated on narrow terminals).
 func (a *App) keyHints() []KeyHint {
-	if a.pending != nil {
-		return []KeyHint{{"Esc", "Cancel"}, {"F1", "Help"}, {"q", "Quit"}}
+	if p := a.pending; p != nil {
+		esc := "Cancel"
+		if p.keepOnCancel {
+			esc = "Stop"
+		}
+		return []KeyHint{{"Esc", esc}, {"F1", "Help"}, {"q", "Quit"}}
 	}
 	h := []KeyHint{{"F1", "Help"}}
 	b := a.browser
@@ -194,13 +204,13 @@ func (a *App) keyHints() []KeyHint {
 		h = append(h, KeyHint{"s", "Servers"})
 	case b.level == levelBuckets:
 		h = append(h, KeyHint{"Enter", "Open"}, KeyHint{"←", "Back"}, KeyHint{"/", "Filter"},
-			KeyHint{"i", "2i query"}, KeyHint{"p", "Props"}, KeyHint{"F5", "Reload"}, KeyHint{"s", "Servers"})
-	case b.inQuery:
-		h = append(h, KeyHint{"Enter", "View"}, KeyHint{"Esc", "All keys"}, KeyHint{"/", "Filter"},
-			KeyHint{"i", "New query"}, KeyHint{"F8", "Delete"})
+			KeyHint{"f", "Find"}, KeyHint{"i", "2i query"}, KeyHint{"p", "Props"}, KeyHint{"F5", "Reload"}, KeyHint{"s", "Servers"})
+	case b.inResults:
+		h = append(h, KeyHint{"Enter", "View"}, KeyHint{"Esc", "Back"}, KeyHint{"/", "Filter"},
+			KeyHint{"f", "Find"}, KeyHint{"i", "2i query"}, KeyHint{"F8", "Delete"})
 	default:
 		h = append(h, KeyHint{"Enter", "View"}, KeyHint{"←", "Back"}, KeyHint{"/", "Filter"},
-			KeyHint{"F7", "New"}, KeyHint{"F8", "Delete"}, KeyHint{"i", "2i query"}, KeyHint{"p", "Props"},
+			KeyHint{"f", "Find"}, KeyHint{"F7", "New"}, KeyHint{"F8", "Delete"}, KeyHint{"i", "2i query"}, KeyHint{"p", "Props"},
 			KeyHint{"F5", "Reload"})
 	}
 	return append(h, KeyHint{"q", "Quit"})
@@ -212,6 +222,8 @@ func (a *App) contextHint() string {
 	switch {
 	case a.conn == connConnecting:
 		return "Connecting…"
+	case a.pending != nil && a.pending.keepOnCancel:
+		return a.pending.desc + "… Esc stops and keeps the matches found so far"
 	case a.pending != nil:
 		return a.pending.desc + "… Esc cancels and goes back"
 	case a.client == nil:
@@ -234,10 +246,10 @@ func (a *App) contextHint() string {
 		return "Pick a bucket type. Riak can't list types over HTTP: add one with “other bucket type…” or --types."
 	case b.level == levelBuckets:
 		return "Pick a bucket. Only buckets that contain keys are listed (a Riak limitation)."
-	case b.inQuery:
-		return "2i query results · Enter view · Esc back to the full key list"
+	case b.inResults:
+		return b.resultsTitle + " · Enter view · Esc back to where you were"
 	default:
-		return "Enter view value · F7 new key · F8 delete key · i query a secondary index"
+		return "Enter view value · f find by field · i query a secondary index · F7 new · F8 delete"
 	}
 }
 

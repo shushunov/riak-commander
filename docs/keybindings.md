@@ -41,6 +41,7 @@ received so far. Until the data arrives, only these keys work:
 | `/` | filter: type to narrow, `Enter` keeps the filter, `Esc` clears it |
 | `Esc` | clear the filter; in 2i results, return to the key list |
 | `F5`, `Ctrl-R` | reload |
+| `f` | find objects by field (scan or Riak Search) in the open or selected bucket |
 | `i` | secondary-index (2i) query on the open or selected bucket |
 | `p` | bucket properties of the open or selected bucket |
 | `F7`, `n` | new key (key list only) |
@@ -101,6 +102,6 @@ a server…** opens the server picker when not connected.
 | Key | Action |
 |-----|--------|
 | `Tab`, `→` / `Shift-Tab`, `←` | next / previous page |
-| `1`–`8` | jump to a page |
+| `1`–`9` | jump to a page |
 | `↑` `↓`, `j` `k` | scroll |
 | `Esc`, `q`, `?`, `F1` | close |

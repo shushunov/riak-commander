@@ -136,8 +136,8 @@ func (s *StatusBar) renderLeft() {
 	case s.busyDesc != "":
 		text = tAccent() + s.spinner() + reset + " " +
 			tText() + tview.Escape(s.busyDesc) + "…" + reset
-		if s.app.pending != nil {
-			text += tMuted() + " · " + reset + tAccent() + "Esc" + reset + tMuted() + " to cancel" + reset
+		if p := s.app.pending; p != nil {
+			text += tMuted() + " · " + reset + tAccent() + "Esc" + reset + tMuted() + " to " + p.escAction() + reset
 		}
 	case s.msg != "":
 		icon, colour := "ℹ", tText()

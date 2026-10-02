@@ -73,6 +73,7 @@ type App struct {
 	// per-bucket 2i conveniences, keyed "type/bucket"
 	seenIndexes map[string]map[string]bool // index names seen on loaded objects
 	lastQuery   map[string]indexQuery      // last query run in the bucket
+	lastFind    map[string]findQuery       // last find run in the bucket
 
 	// startAddress is connected to by Run (empty: open the server picker)
 	startAddress string
@@ -102,6 +103,7 @@ func New(address string, opts Options) *App {
 		hist:         opts.History,
 		seenIndexes:  map[string]map[string]bool{},
 		lastQuery:    map[string]indexQuery{},
+		lastFind:     map[string]findQuery{},
 		startAddress: address,
 	}
 	a.header = newHeader()
@@ -194,6 +196,7 @@ func (a *App) connect(address string, onDone func()) {
 			a.browser.propsCache = map[string]map[string]any{}
 			a.seenIndexes = map[string]map[string]bool{}
 			a.lastQuery = map[string]indexQuery{}
+			a.lastFind = map[string]findQuery{}
 			a.browser.showTypes()
 			a.focusBrowser()
 			a.status.Success("Connected to %s", candidate.Address())
@@ -280,6 +283,21 @@ type pendingLoad struct {
 	started  time.Time
 	progress atomic.Int64 // items received so far (key listings), set by the worker
 	restore  func()
+
+	// keepOnCancel makes Esc stop the load but keep what it produced so far
+	// (find scans) instead of restoring the previous view.
+	keepOnCancel bool
+	// progressText (optional) replaces the default "N keys so far" line; it
+	// is called from the draw hook and must only read atomics.
+	progressText func() string
+}
+
+// escAction is what Esc does to this load, for hints.
+func (p *pendingLoad) escAction() string {
+	if p.keepOnCancel {
+		return "stop"
+	}
+	return "cancel"
 }
 
 // elapsed reports how long the load has run and whether the loading
@@ -292,7 +310,7 @@ func (p *pendingLoad) elapsed() (time.Duration, bool) {
 // asyncRun is one in-flight async call.
 type asyncRun struct {
 	cancel    context.CancelFunc
-	cancelled bool
+	cancelled bool // Esc: discard the result (the view was restored)
 }
 
 // busy reports (and tells the user) whether another call is in flight.
@@ -372,9 +390,16 @@ func (a *App) cancelPending() {
 	if p == nil || run == nil {
 		return
 	}
+	a.pending = nil
+	if p.keepOnCancel {
+		// stop: the worker sees the cancelled context, returns what it has
+		// and done reports it as a partial result
+		run.cancel()
+		a.status.Info("Stopping…")
+		return
+	}
 	run.cancelled = true
 	run.cancel()
-	a.pending = nil
 	if p.restore != nil {
 		p.restore()
 	}
@@ -453,7 +478,7 @@ func (a *App) infoText() string {
 		return ""
 	case a.pending != nil && a.pending.kind == pendingList:
 		return "" // counts of the old or empty list would mislead
-	case b.level == levelKeys && b.inQuery:
+	case b.level == levelKeys && b.inResults:
 		return pluralize(len(b.items), "result", "results")
 	case b.level == levelKeys:
 		s := pluralize(len(b.items), "key", "keys")

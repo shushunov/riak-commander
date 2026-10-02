@@ -172,10 +172,14 @@ func (a *App) form(spec formSpec) {
 
 	frame := newDialogFrame(tview.Escape(spec.title))
 
+	errRows := 0
+	var refit func()
 	submit := func() {
 		if err := spec.onOK(f); err != nil {
 			errView.SetText(tDanger() + "✖ " + tview.Escape(err.Error()) + reset)
-			frame.ResizeItem(errView, 1+len(err.Error())/(spec.width-4), 0)
+			errRows = 1 + len(err.Error())/(spec.width-4)
+			frame.ResizeItem(errView, errRows, 0)
+			refit() // grow the dialog so the footer keeps its place
 			return
 		}
 		a.closeModal()
@@ -222,7 +226,7 @@ func (a *App) form(spec formSpec) {
 		for i := 0; i < f.GetFormItemCount(); i++ {
 			formRows += f.GetFormItem(i).GetFieldHeight() + 1 // item + spacing
 		}
-		return formRows, formRows + hintRows + 3 + 2 // + spacers, footer, borders
+		return formRows, formRows + errRows + hintRows + 3 + 2 // + error, spacers, footer, borders
 	}
 	formRows, total := size()
 	frame.AddItem(f, formRows, 0, true).
@@ -233,7 +237,7 @@ func (a *App) form(spec formSpec) {
 		AddItem(footer, 1, 0, false)
 
 	var box *centered // set once the dialog is open
-	refit := func() {
+	refit = func() {
 		formRows, total := size()
 		frame.ResizeItem(f, formRows, 0)
 		if box != nil {

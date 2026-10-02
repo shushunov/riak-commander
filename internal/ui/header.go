@@ -70,8 +70,8 @@ func (a *App) breadcrumb() []string {
 	}
 	if b.level >= levelKeys {
 		out = append(out, b.bucket)
-		if b.inQuery {
-			out = append(out, "2i "+b.queryDesc)
+		if b.inResults {
+			out = append(out, b.queryDesc)
 		}
 	}
 	if p := a.pending; p != nil && p.kind == pendingValue {

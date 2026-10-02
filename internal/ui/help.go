@@ -29,9 +29,9 @@ Enter  → | open the selected item
 ←  Backspace | go back up a level
 Tab | switch between the list and the value pane
 / | filter the list (or search inside a JSON value)
-Esc | cancel a load, clear a filter, leave 2i results, close dialogs
+Esc | cancel a load, clear a filter, leave 2i or find results, close dialogs
 s | servers: connect, switch, recent history
-F1  ? | this help (Tab / → next page, ← previous, 1–8 jump)
+F1  ? | this help (Tab / → next page, ← previous, 1–9 jump)
 q  F10  Ctrl-C | quit (asks first if there are unsaved edits)
 
 # Function keys
@@ -156,6 +156,32 @@ Max results | stop after this many keys
 The special indexes $key (range over key names) and $bucket (all keys of the
 bucket) work as well. The last query per bucket is prefilled next time.`},
 
+	{"Find", `
+# Find objects by field
+f | find in the open (or selected) bucket
+Esc | stop a running scan (matches so far are kept); again to go back
+
+# Scan (works on every cluster)
+Field | a path such as plan.name, items[0].sku or items[*].sku; quote odd
+      | names: ["odd.key"]. Leave empty to match any field name or value
+Match | equals (numbers compare numerically: 12 = 12.0), contains (ignores
+      | case), regex (Go syntax), exists (the field is present)
+Value | what to match; hidden for exists
+Scan up to | how many keys to check (defaults to --max-keys)
+
+The scan lists the bucket's keys (or reuses the open key list), fetches
+each object (8 at a time) and matches it. Matches appear while it runs,
+next to the matched value. Non-JSON values, siblings and objects deleted
+meanwhile are skipped and counted. A scan reads every object it checks:
+fine for development data, slow and heavy on big production buckets.
+
+# Riak Search
+When the bucket has a Riak Search index (its search_index property),
+"Using" offers Riak Search: type a Solr query, e.g. plan.name_s:business,
+and the cluster answers from the index instantly. Field names follow the
+index schema. Riak Search was deprecated and is absent from Riak KV 3.x
+builds by default, so many clusters only offer the scan.`},
+
 	{"Safety", `
 # Why not just curl?
 Vclocks | every save sends back the X-Riak-Vclock read with the value, so
@@ -185,11 +211,12 @@ F8  Del | delete key (list) · delete field (tree) · forget type
 F10  q  Ctrl-C | quit
 Tab | switch panes
 s  c | servers
+f | find objects by field (scan or Riak Search)
 i | 2i query
 p | bucket properties
 r | rename a field
 / | filter / search
-Esc | cancel a load, clear filter, leave 2i results, close dialogs
+Esc | cancel a load, clear filter, leave 2i or find results, close dialogs
 j  k | down / up in lists
 
 # Mouse
@@ -211,8 +238,10 @@ func (a *App) helpSectionFor() int {
 		return 4
 	case a.viewerFocused():
 		return 3
-	case a.browser.inQuery:
+	case a.browser.inResults && strings.HasPrefix(a.browser.queryDesc, "2i"):
 		return 5
+	case a.browser.inResults:
+		return 6
 	case a.browser.level > levelTypes:
 		return 2
 	}
@@ -229,7 +258,7 @@ func (a *App) helpModal() {
 	body.SetBackgroundColor(th.Surface)
 	footer := tview.NewTextView().SetDynamicColors(true).SetTextAlign(tview.AlignRight)
 	footer.SetBackgroundColor(th.Surface)
-	footer.SetText(keyHelp("Tab →", "next page", "←", "previous", "1–8", "jump", "↑↓", "scroll", "Esc", "close"))
+	footer.SetText(keyHelp("Tab →", "next page", "←", "previous", "1–9", "jump", "↑↓", "scroll", "Esc", "close"))
 
 	show := func(i int) {
 		cur = (i + len(helpSections)) % len(helpSections)

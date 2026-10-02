@@ -28,6 +28,8 @@ data in a [Riak KV](https://github.com/basho/riak) cluster over its HTTP API.
   Saves keep the **vclock**, every **secondary index** and user metadata, and
   never reorder keys or round 64-bit numbers.
 - **Create and delete keys** (creation never overwrites an existing key).
+- **Find objects by field**: `plan.name = business`, contains, regex or
+  "exists", by scanning the bucket (any cluster) or through Riak Search.
 - **Query secondary indexes (2i)**: exact and range, with index-name suggestions.
 - **Resolve siblings** by picking the version to keep.
 - **Remember servers**: reconnects to the last server on start; a server
@@ -149,6 +151,18 @@ type and body. JSON bodies are validated, and the request uses
 **Delete a key**: select it in the key list, press `F8` (or `Del`) and
 confirm. This is permanent.
 
+**Find objects by field**: press `f` in a bucket. Enter a field path
+(`plan.name`, `items[0].sku`, `items[*].sku`, or empty for any field), a
+match (equals, contains, regex, exists) and a value. Riak Commander lists
+the bucket's keys, fetches each object (8 at a time) and shows the matching
+keys next to the matched value, live, as it goes. `Esc` stops the scan and
+keeps what was found; `Esc` again returns to the key list. Non-JSON values
+and keys with siblings are skipped and counted. A scan reads every object
+it checks, so cap it with "Scan up to" on big buckets. If the bucket has a
+Riak Search index, "Using" also offers **Riak Search**: type a Solr query
+(for example `plan.name_s:business`) and the cluster answers from the index.
+Riak Search was deprecated and is not in Riak KV 3.x builds by default.
+
 **Query a secondary index**: press `i` in a bucket (or with a bucket
 selected). Enter the index name (`…_bin` or `…_int`). Names seen on objects
 you opened, and names from earlier queries, are suggested. Choose exact (one
@@ -181,8 +195,9 @@ keys, so every F-key has a letter or `Ctrl` alternative.
 | `Enter` `→` | | open / expand |
 | `←` `Backspace` | | go up / collapse |
 | `/` | | filter the list · search the tree |
-| `Esc` | `←` while loading | cancel a load · clear filter · leave 2i results · close dialog |
+| `Esc` | `←` while loading | cancel a load · clear filter · leave 2i or find results · close dialog |
 | `s` | `c` | servers |
+| `f` | | find objects by field |
 | `i` | | 2i query |
 | `p` | | bucket properties |
 | `r` | | rename field |

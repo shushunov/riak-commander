@@ -31,7 +31,8 @@ const (
 	rowMore                       // load the next page of keys
 	rowConnect                    // open the server picker (no connection yet)
 	rowLoading                    // spinner + elapsed time while a load is pending
-	rowLoadingInfo                // progress / "Esc cancel" under the spinner
+	rowLoadingInfo                // progress under the spinner
+	rowLoadingHint                // "Esc cancel" / "Esc stop"
 )
 
 type row struct {
@@ -58,8 +59,13 @@ type Browser struct {
 	filterText string
 	filterMode bool
 
-	inQuery   bool // showing 2i results instead of a key listing
-	queryDesc string
+	// results mode: the list shows 2i or find results instead of a listing
+	inResults     bool
+	queryDesc     string            // e.g. "2i email_bin=x", "find plan.name = business"
+	resultsTitle  string            // pane title suffix, e.g. "2i results"
+	notes         map[string]string // key → matched value shown next to it
+	resultsReturn func()            // restores the view the results were opened from
+	resultsGen    int               // bumps per results view; late scan batches compare it
 
 	propsCache map[string]map[string]any // "type/bucket" → bucket props
 }
@@ -116,7 +122,7 @@ func (b *Browser) handleKey(ev *tcell.EventKey) *tcell.EventKey {
 	case ev.Key() == tcell.KeyRight:
 		b.activate(b.list.GetCurrentItem())
 		return nil
-	case ev.Key() == tcell.KeyEscape && (b.filterText != "" || b.inQuery):
+	case ev.Key() == tcell.KeyEscape && (b.filterText != "" || b.inResults):
 		if b.filterText != "" {
 			b.filterText = ""
 			b.render()
@@ -170,12 +176,13 @@ func (b *Browser) render() {
 		add(row{kind: rowOtherType})
 	}
 	loading := b.app.pending != nil && b.app.pending.kind == pendingList
-	if b.level == levelKeys && b.truncated && b.filterText == "" && !b.inQuery && !loading {
+	if b.level == levelKeys && b.truncated && b.filterText == "" && !b.inResults && !loading {
 		add(row{kind: rowMore})
 	}
 	if loading {
 		add(row{kind: rowLoading})
 		add(row{kind: rowLoadingInfo})
+		add(row{kind: rowLoadingHint})
 	}
 
 	b.layout.SetTitle(b.title(shown))
@@ -195,8 +202,8 @@ func (b *Browser) title(shown int) string {
 	case levelBuckets:
 		t = fmt.Sprintf("%s › buckets", orDefault(b.btype))
 	case levelKeys:
-		if b.inQuery {
-			t = fmt.Sprintf("%s › 2i results", b.bucket)
+		if b.inResults {
+			t = fmt.Sprintf("%s › %s", b.bucket, b.resultsTitle)
 		} else {
 			t = fmt.Sprintf("%s › keys", b.bucket)
 		}
@@ -244,7 +251,7 @@ func (b *Browser) label(r row, selected bool) string {
 	case rowConnect:
 		glyph, text = "→", "connect to a server…"
 		textColour = tAccent()
-	case rowLoading, rowLoadingInfo:
+	case rowLoading, rowLoadingInfo, rowLoadingHint:
 		return b.loadingLabel(r.kind)
 	default:
 		text = r.value
@@ -258,18 +265,21 @@ func (b *Browser) label(r row, selected bool) string {
 			glyph = "▤"
 		case levelKeys:
 			glyph, glyphColour = "·", tMuted()
+			if b.inResults {
+				note = b.notes[r.value]
+			}
 		}
 	}
 	if selected || th.Mono {
 		s := " " + glyph + " " + tview.Escape(text)
 		if note != "" {
-			s += "  " + note
+			s += "  " + tview.Escape(note)
 		}
 		return s
 	}
 	s := " " + glyphColour + glyph + reset + " " + textColour + tview.Escape(text) + reset
 	if note != "" {
-		s += "  " + tMuted() + note + reset
+		s += "  " + tMuted() + tview.Escape(note) + reset
 	}
 	return s
 }
@@ -329,7 +339,7 @@ func (b *Browser) currentItem() string {
 
 func (b *Browser) showTypes() {
 	b.level, b.items = levelTypes, b.app.bucketTypes()
-	b.btype, b.bucket, b.filterText, b.filterMode, b.inQuery = "", "", "", false, false
+	b.btype, b.bucket, b.filterText, b.filterMode, b.inResults = "", "", "", false, false
 	b.renderFresh()
 }
 
@@ -338,7 +348,7 @@ func (b *Browser) activate(i int) {
 		return
 	}
 	r := b.rows[i]
-	if b.app.pending != nil || r.kind == rowLoading || r.kind == rowLoadingInfo {
+	if b.app.pending != nil || r.kind == rowLoading || r.kind == rowLoadingInfo || r.kind == rowLoadingHint {
 		return
 	}
 	switch r.kind {
@@ -370,7 +380,7 @@ func (b *Browser) up() {
 	b.filterText, b.filterMode = "", false
 	switch b.level {
 	case levelKeys:
-		if b.inQuery {
+		if b.inResults {
 			b.exitQueryMode()
 			return
 		}
@@ -391,7 +401,7 @@ func (b *Browser) refresh() {
 	case levelBuckets:
 		b.loadBuckets(b.btype)
 	case levelKeys:
-		if b.inQuery {
+		if b.inResults {
 			b.exitQueryMode()
 		} else {
 			b.reloadKeysThen(nil)
@@ -447,9 +457,12 @@ type browserState struct {
 	level                 browserLevel
 	btype, bucket         string
 	items                 []string
-	truncated, inQuery    bool
+	truncated, inResults  bool
 	keyCap                int
 	queryDesc, filterText string
+	resultsTitle          string
+	notes                 map[string]string
+	resultsReturn         func()
 	cursor                int
 }
 
@@ -457,13 +470,15 @@ type browserState struct {
 func (b *Browser) snapshot() func() {
 	st := browserState{
 		level: b.level, btype: b.btype, bucket: b.bucket, items: b.items,
-		truncated: b.truncated, inQuery: b.inQuery, keyCap: b.keyCap,
+		truncated: b.truncated, inResults: b.inResults, keyCap: b.keyCap,
 		queryDesc: b.queryDesc, filterText: b.filterText, cursor: b.list.GetCurrentItem(),
+		resultsTitle: b.resultsTitle, notes: b.notes, resultsReturn: b.resultsReturn,
 	}
 	return func() {
 		b.level, b.btype, b.bucket, b.items = st.level, st.btype, st.bucket, st.items
-		b.truncated, b.inQuery, b.keyCap = st.truncated, st.inQuery, st.keyCap
+		b.truncated, b.inResults, b.keyCap = st.truncated, st.inResults, st.keyCap
 		b.queryDesc, b.filterText, b.filterMode = st.queryDesc, st.filterText, false
+		b.resultsTitle, b.notes, b.resultsReturn = st.resultsTitle, st.notes, st.resultsReturn
 		b.render()
 		if st.cursor >= 0 && st.cursor < b.list.GetItemCount() {
 			b.list.SetCurrentItem(st.cursor)
@@ -488,18 +503,23 @@ func (b *Browser) loadingLabel(kind rowKind) string {
 		return " " + tAccent() + b.app.status.spinner() + reset + " " + tText() + tview.Escape(p.desc) + "…" + reset +
 			"  " + tMuted() + fmt.Sprintf("%.1f s", d.Seconds()) + reset
 	}
-	info := ""
-	if n := p.progress.Load(); n > 0 {
-		info = tText() + formatCount(int(n)) + " keys so far" + reset + tMuted() + " · " + reset
+	if kind == rowLoadingHint {
+		return "   " + tAccent() + "Esc" + reset + tMuted() + " " + p.escAction() + reset
 	}
-	return "   " + info + tAccent() + "Esc" + reset + tMuted() + " cancel" + reset
+	info := ""
+	if p.progressText != nil {
+		info = p.progressText()
+	} else if n := p.progress.Load(); n > 0 {
+		info = formatCount(int(n)) + " keys so far"
+	}
+	return "   " + tText() + tview.Escape(info) + reset
 }
 
 // renderLoading refreshes the loading rows (called before every draw while
 // a list load is pending; the status spinner ticks the redraws).
 func (b *Browser) renderLoading() {
 	for i, r := range b.rows {
-		if (r.kind == rowLoading || r.kind == rowLoadingInfo) && i < b.list.GetItemCount() {
+		if (r.kind == rowLoading || r.kind == rowLoadingInfo || r.kind == rowLoadingHint) && i < b.list.GetItemCount() {
 			if want := b.loadingLabel(r.kind); want != b.mainText(i) {
 				b.list.SetItemText(i, want, "")
 			}
@@ -541,7 +561,7 @@ func (b *Browser) loadBuckets(btype string) {
 func (b *Browser) loadBucketsThen(btype string, then func()) {
 	p := b.startListLoad("Loading buckets", false, func() {
 		b.level, b.btype, b.bucket = levelBuckets, btype, ""
-		b.items, b.inQuery, b.truncated = nil, false, false
+		b.items, b.inResults, b.truncated = nil, false, false
 	})
 	if p == nil {
 		return
@@ -597,7 +617,8 @@ func (b *Browser) loadKeysWith(keep bool, then func(), mutate func()) {
 		if mutate != nil {
 			mutate()
 		}
-		b.level, b.inQuery, b.queryDesc = levelKeys, false, ""
+		b.level, b.inResults, b.queryDesc = levelKeys, false, ""
+		b.notes, b.resultsReturn = nil, nil
 	})
 	if p == nil {
 		return
@@ -670,13 +691,9 @@ func (b *Browser) fetchProps() {
 // btype/bucket, navigating first like the other list loads; then (may be
 // nil) runs on success.
 func (b *Browser) runQuery(btype, bucket, desc string, fn func(ctx context.Context) (*riak.IndexResult, error), then func()) {
+	back := b.snapshot()
 	p := b.startListLoad("Running 2i query", false, func() {
-		b.level, b.btype, b.bucket = levelKeys, btype, bucket
-		if b.keyCap < b.app.opts.MaxKeys {
-			b.keyCap = b.app.opts.MaxKeys // Esc returns to a bounded key listing
-		}
-		b.inQuery, b.queryDesc = true, desc
-		b.items, b.truncated = nil, false
+		b.enterResults(btype, bucket, "2i "+desc, "2i results", back)
 	})
 	if p == nil {
 		return
@@ -701,6 +718,27 @@ func (b *Browser) runQuery(btype, bucket, desc string, fn func(ctx context.Conte
 	})
 }
 
-func (b *Browser) exitQueryMode() { b.loadKeys() }
+// enterResults switches the list to an (empty, about to be filled) results
+// view of btype/bucket; back restores the view the results came from.
+func (b *Browser) enterResults(btype, bucket, desc, title string, back func()) {
+	b.level, b.btype, b.bucket = levelKeys, btype, bucket
+	if b.keyCap < b.app.opts.MaxKeys {
+		b.keyCap = b.app.opts.MaxKeys // a later re-list stays bounded
+	}
+	b.inResults, b.queryDesc, b.resultsTitle = true, desc, title
+	b.resultsGen++
+	b.items, b.truncated, b.notes = nil, false, map[string]string{}
+	b.resultsReturn = back
+}
+
+// exitQueryMode leaves 2i / find results: back to the view they were opened
+// from (instantly, no re-listing), or a fresh key listing.
+func (b *Browser) exitQueryMode() {
+	if back := b.resultsReturn; back != nil {
+		back()
+		return
+	}
+	b.loadKeys()
+}
 
 func bucketKey(btype, bucket string) string { return orDefault(btype) + "/" + bucket }
