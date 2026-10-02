@@ -153,12 +153,16 @@ confirm. This is permanent.
 
 **Find objects by field**: press `f` in a bucket. Enter a field path
 (`plan.name`, `items[0].sku`, `items[*].sku`, or empty for any field), a
-match (equals, contains, regex, exists) and a value. Riak Commander lists
+match (equals, contains, regex, exists) and a value. Riak Commander streams
 the bucket's keys, fetches each object (8 at a time) and shows the matching
-keys next to the matched value, live, as it goes. `Esc` stops the scan and
-keeps what was found; `Esc` again returns to the key list. Non-JSON values
-and keys with siblings are skipped and counted. A scan reads every object
-it checks, so cap it with "Scan up to" on big buckets. If the bucket has a
+keys next to the matched value, live, as it goes. The scan always covers the
+**whole bucket**, so when it finishes the status says "Searched all N keys"
+and "no matches" really means none exist. `Esc` stops the scan and keeps what
+was found; the status then says "Not all keys were checked" and the pane
+title is marked *(incomplete)*. `Esc` again returns to the key list.
+Non-JSON values and keys with siblings are skipped and counted. A scan reads
+every object, so on big production buckets it takes a while and loads the
+cluster. If the bucket has a
 Riak Search index, "Using" also offers **Riak Search**: type a Solr query
 (for example `plan.name_s:business`) and the cluster answers from the index.
 Riak Search was deprecated and is not in Riak KV 3.x builds by default.

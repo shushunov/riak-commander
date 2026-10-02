@@ -167,13 +167,15 @@ Field | a path such as plan.name, items[0].sku or items[*].sku; quote odd
 Match | equals (numbers compare numerically: 12 = 12.0), contains (ignores
       | case), regex (Go syntax), exists (the field is present)
 Value | what to match; hidden for exists
-Scan up to | how many keys to check (defaults to --max-keys)
 
-The scan lists the bucket's keys (or reuses the open key list), fetches
-each object (8 at a time) and matches it. Matches appear while it runs,
-next to the matched value. Non-JSON values, siblings and objects deleted
-meanwhile are skipped and counted. A scan reads every object it checks:
-fine for development data, slow and heavy on big production buckets.
+The scan always covers the whole bucket: it streams the keys, fetches each
+object (8 at a time) and matches it. Matches appear while it runs, next to
+the matched value. When it finishes, the status says "Searched all N keys",
+so "no matches" means none exist. Esc stops it early: the matches so far
+stay, the title says (incomplete) and the status "Not all keys were
+checked". Non-JSON values, siblings and objects deleted meanwhile are
+skipped and counted. A scan reads every object: fine for development data,
+slow and heavy on big production buckets.
 
 # Riak Search
 When the bucket has a Riak Search index (its search_index property),

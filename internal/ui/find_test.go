@@ -21,6 +21,9 @@ type findStub struct {
 	slowAfter   int
 	release     chan struct{}
 	searchIndex string
+	// chunked streams the key listing in several chunks, repeating some
+	// keys across chunks the way Riak may
+	chunked bool
 }
 
 func (s *findStub) handler() http.Handler {
@@ -34,7 +37,14 @@ func (s *findStub) handler() http.Handler {
 		for i := 1; i <= 50; i++ {
 			keys = append(keys, fmt.Sprintf(`"u%d"`, i))
 		}
-		fmt.Fprintf(w, `{"keys":[%s]}`, strings.Join(keys, ","))
+		if !s.chunked {
+			fmt.Fprintf(w, `{"keys":[%s]}`, strings.Join(keys, ","))
+			return
+		}
+		// three overlapping chunks: u20…u30 and "bin" are sent twice
+		fmt.Fprintf(w, `{"keys":[%s]}`, strings.Join(keys[:32], ","))
+		fmt.Fprintf(w, `{"keys":[%s]}`, strings.Join(append([]string{`"bin"`}, keys[21:40]...), ","))
+		fmt.Fprintf(w, `{"keys":[%s]}`, strings.Join(keys[40:], ","))
 	})
 	mux.HandleFunc("/buckets/users/props", func(w http.ResponseWriter, r *http.Request) {
 		idx := s.searchIndex
@@ -103,6 +113,9 @@ func TestFindScanListsMatchesWithValues(t *testing.T) {
 	if screenHas(sim, app, "Using") {
 		t.Fatal("Riak Search mode offered for a bucket without a search index")
 	}
+	if screenHas(sim, app, "Scan up to") {
+		t.Fatal("the scan has no key limit any more")
+	}
 	typeText(sim, "plan.name")
 	sim.InjectKey(tcell.KeyTab, 0, tcell.ModNone) // Match (equals)
 	sim.InjectKey(tcell.KeyTab, 0, tcell.ModNone) // Value
@@ -110,7 +123,7 @@ func TestFindScanListsMatchesWithValues(t *testing.T) {
 	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
 
 	waitFor(t, sim, app, "users › find results")
-	waitFor(t, sim, app, "Checked 52 keys · 5 matches · 2 skipped")
+	waitFor(t, sim, app, "Searched all 52 keys · 5 matches · 2 skipped")
 	for _, k := range []string{"· u10", "· u20", "· u50"} {
 		waitFor(t, sim, app, k)
 	}
@@ -151,8 +164,9 @@ func TestFindScanEscStopsAndKeepsMatches(t *testing.T) {
 
 	sim.InjectKey(tcell.KeyEscape, 0, tcell.ModNone)
 	waitFor(t, sim, app, "Stopped after checking")
+	waitFor(t, sim, app, "Not all keys were checked")
 	waitFor(t, sim, app, "· u10")
-	waitFor(t, sim, app, "users › find results")
+	waitFor(t, sim, app, "users › find results (incomplete)")
 
 	// a second Esc returns to the key list
 	sim.InjectKey(tcell.KeyEscape, 0, tcell.ModNone)
@@ -200,7 +214,7 @@ func TestFindExistsHidesValueField(t *testing.T) {
 	}
 	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone) // exists
 	time.Sleep(300 * time.Millisecond)
-	waitFor(t, sim, app, "Match      exists")
+	waitFor(t, sim, app, "Match exists")  // label column width depends on the fields shown
 	if screenHas(sim, app, "│  Value ") { // the dialog row, not the value pane's title
 		t.Fatal("Value field shown for Match: exists")
 	}
@@ -230,4 +244,53 @@ func TestFindRiakSearchMode(t *testing.T) {
 	waitFor(t, sim, app, "users › search results")
 	waitFor(t, sim, app, "Riak Search: 2 matches")
 	waitFor(t, sim, app, "· u20")
+}
+
+func TestFindScansWholeBucketBeyondTruncatedKeyList(t *testing.T) {
+	stub := &findStub{chunked: true}
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+
+	// the key list shows only the first 10 keys; find must still check all 52
+	app := New(srv.URL, Options{MaxKeys: 10, Timeout: 5 * time.Second})
+	sim := startApp(t, app)
+	waitFor(t, sim, app, "Connected to")
+	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	waitFor(t, sim, app, "▤ users")
+	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	waitFor(t, sim, app, "load next 10 keys")
+
+	typeText(sim, "f")
+	waitFor(t, sim, app, "Find in default/users")
+	typeText(sim, "plan.name")
+	sim.InjectKey(tcell.KeyTab, 0, tcell.ModNone)
+	sim.InjectKey(tcell.KeyTab, 0, tcell.ModNone)
+	typeText(sim, "business")
+	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+
+	// duplicates across chunks are checked once: 52 distinct keys
+	waitFor(t, sim, app, "Searched all 52 keys · 5 matches · 2 skipped")
+	waitFor(t, sim, app, "· u50")
+	if screenHas(sim, app, "(incomplete)") {
+		t.Fatal("a complete search is marked incomplete")
+	}
+}
+
+func TestFindReportsNoMatchesAsComplete(t *testing.T) {
+	stub := &findStub{}
+	srv := httptest.NewServer(stub.handler())
+	defer srv.Close()
+
+	app := New(srv.URL, Options{Timeout: 5 * time.Second})
+	sim := startApp(t, app)
+	openUsersKeys(t, sim, app)
+
+	typeText(sim, "f")
+	waitFor(t, sim, app, "Find in default/users")
+	typeText(sim, "plan.name")
+	sim.InjectKey(tcell.KeyTab, 0, tcell.ModNone)
+	sim.InjectKey(tcell.KeyTab, 0, tcell.ModNone)
+	typeText(sim, "enterprise")
+	sim.InjectKey(tcell.KeyEnter, 0, tcell.ModNone)
+	waitFor(t, sim, app, "Searched all 52 keys · no matches")
 }

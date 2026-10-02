@@ -25,7 +25,8 @@ uses [semantic versioning](https://semver.org/).
 - Addresses may be `host`, `host:port` or `http(s)://host:port/prefix`.
 - Find in bucket (`f`): match objects by field path (`plan.name`,
   `items[*].sku`, or any field) with equals / contains / regex / exists,
-  by scanning with live results (`Esc` stops and keeps matches) or through
+  by scanning the whole bucket with live results (`Esc` stops and keeps
+  matches; stopped searches are marked incomplete) or through
   Riak Search when the bucket has a search index.
 - Visible, cancellable loading: opening a bucket type, bucket, key or 2i
   query switches the pane immediately and shows a spinner, elapsed time and

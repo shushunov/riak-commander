@@ -239,7 +239,8 @@ func TestListKeysProgressReportsRunningTotal(t *testing.T) {
 	if len(keys) != 4 || !truncated {
 		t.Fatalf("got %d keys truncated=%v, want 4/true", len(keys), truncated)
 	}
-	if want := []int{2, 2, 4}; !reflect.DeepEqual(got, want) {
+	// empty chunks carry no news and are skipped; the total is capped
+	if want := []int{2, 4}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("progress = %v, want %v (capped at the limit)", got, want)
 	}
 }
@@ -361,5 +362,31 @@ func TestBucketPath(t *testing.T) {
 	}
 	if _, err := url.Parse(bucketPath("t", "b")); err != nil {
 		t.Error(err)
+	}
+}
+
+func TestStreamKeysDeliversChunksAndStopsOnError(t *testing.T) {
+	c := newTestClient(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"keys":["a","b"]}{"keys":[]}{"keys":["c"]}{"keys":["d"]}`)
+	}))
+	var got [][]string
+	if err := c.StreamKeys(context.Background(), "", "b", func(k []string) error {
+		got = append(got, k)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if want := [][]string{{"a", "b"}, {"c"}, {"d"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("chunks = %v, want %v (empty chunks skipped)", got, want)
+	}
+
+	stop := errors.New("enough")
+	n := 0
+	err := c.StreamKeys(context.Background(), "", "b", func(k []string) error {
+		n++
+		return stop
+	})
+	if !errors.Is(err, stop) || n != 1 {
+		t.Fatalf("err = %v after %d chunks, want the callback's error after 1", err, n)
 	}
 }

@@ -33,8 +33,7 @@ var matchModeNames = []string{"equals", "contains", "regex", "exists"}
 type findQuery struct {
 	search bool // Riak Search instead of a scan
 
-	path, mode, value string // scan
-	limit             int    // scan: max keys to check
+	path, mode, value string // scan (always the whole bucket)
 
 	solr string // search: Solr query
 	rows int    // search: max results
@@ -112,7 +111,7 @@ func (a *App) openFindDialog(btype, bucket string, props map[string]any) {
 	searchIndex := searchIndexOf(props)
 	last, ok := a.lastFind[k]
 	if !ok {
-		last = findQuery{mode: "equals", limit: a.opts.MaxKeys, rows: 100}
+		last = findQuery{mode: "equals", rows: 100}
 	}
 	if searchIndex == "" {
 		last.search = false
@@ -141,12 +140,10 @@ func (a *App) openFindDialog(btype, bucket string, props map[string]any) {
 	}
 	styleDropDown(match)
 	valueField := tview.NewInputField().SetLabel("Value").SetText(last.value).SetFieldWidth(52)
-	limitField := tview.NewInputField().SetLabel("Scan up to").SetText(strconv.Itoa(last.limit)).SetFieldWidth(10).
-		SetPlaceholder("keys")
 	solrField := tview.NewInputField().SetLabel("Query").SetText(last.solr).SetFieldWidth(52).
 		SetPlaceholder("Solr syntax, e.g. plan.name_s:business")
 	rowsField := tview.NewInputField().SetLabel("Max results").SetText(strconv.Itoa(last.rows)).SetFieldWidth(10)
-	for _, in := range []*tview.InputField{pathField, valueField, limitField, solrField, rowsField} {
+	for _, in := range []*tview.InputField{pathField, valueField, solrField, rowsField} {
 		styleInput(in)
 	}
 
@@ -159,9 +156,10 @@ func (a *App) openFindDialog(btype, bucket string, props map[string]any) {
 	}
 	matchName := func() string { _, n := match.GetCurrentOption(); return n }
 
-	hint := "Scan: fetches the bucket's objects (" + strconv.Itoa(findWorkers) + " at a time) and matches the field in each; " +
-		"slow on big buckets. Field paths: a.b, items[0].sku, items[*].sku, [\"odd.key\"]; an empty Field matches " +
-		"any field name or value. Equals compares numbers numerically; contains ignores case. Esc stops a scan and keeps the matches."
+	hint := "Scan: checks every object in the bucket (" + strconv.Itoa(findWorkers) + " at a time); on big buckets " +
+		"this takes a while and loads the cluster. Esc stops and keeps the matches found so far. Field paths: a.b, " +
+		"items[0].sku, items[*].sku, [\"odd.key\"]; an empty Field matches any field name or value. Equals compares " +
+		"numbers numerically; contains ignores case."
 	if searchIndex != "" {
 		hint += " Riak Search answers from the index instantly; field names follow the index schema (often with a type suffix such as _s)."
 	}
@@ -189,7 +187,6 @@ func (a *App) openFindDialog(btype, bucket string, props map[string]any) {
 					if matchName() != "exists" {
 						f.AddFormItem(valueField)
 					}
-					f.AddFormItem(limitField)
 				}
 				refit()
 			}
@@ -220,7 +217,7 @@ func (a *App) openFindDialog(btype, bucket string, props map[string]any) {
 					return fmt.Errorf("max results must be a positive number")
 				}
 				q.rows = rows
-				q.path, q.mode, q.value, q.limit = last.path, last.mode, last.value, last.limit
+				q.path, q.mode, q.value = last.path, last.mode, last.value
 			} else {
 				q.path, q.mode, q.value = strings.TrimSpace(pathField.GetText()), matchName(), valueField.GetText()
 				path, err := jsontree.ParsePath(q.path)
@@ -236,11 +233,6 @@ func (a *App) openFindDialog(btype, bucket string, props map[string]any) {
 				if _, err := jsontree.NewMatcher(matchModeFromName(q.mode), q.value); err != nil {
 					return err
 				}
-				limit, err := strconv.Atoi(strings.TrimSpace(limitField.GetText()))
-				if err != nil || limit < 1 {
-					return fmt.Errorf("“Scan up to” must be a positive number of keys")
-				}
-				q.limit = limit
 				q.solr, q.rows = last.solr, last.rows
 			}
 			a.lastFind[k] = q
@@ -285,37 +277,75 @@ func (a *App) runSearch(btype, bucket, index string, q findQuery) {
 
 // ---- scan ----
 
-// scanStats are shared between the scan workers and the draw hook.
+// A scan always covers the whole bucket: a silent cap would make "no
+// matches" look definitive when part of the bucket was never checked. Keys
+// stream straight into the workers, so memory stays flat and matching
+// starts at once; Esc stops the scan, and the result says whether every key
+// was checked.
+
+// scanStats are shared between the scan goroutines and the draw hook.
 type scanStats struct {
-	listing atomic.Bool  // still listing keys
-	listed  atomic.Int64 // keys listed so far
-	total   atomic.Int64 // keys to check
-	checked atomic.Int64
-	matched atomic.Int64
-	skipped atomic.Int64
+	fed         atomic.Int64 // distinct keys handed to the workers
+	listingDone atomic.Bool  // the key source is exhausted: fed is the total
+	checked     atomic.Int64
+	matched     atomic.Int64
+	skipped     atomic.Int64
 }
 
 type scanHit struct{ key, note string }
 
 type scanOutcome struct {
-	stopped bool
+	stopped bool  // Esc
+	listErr error // the key listing failed part-way
 	lastErr error // last per-object error (objects are skipped, not fatal)
 }
 
-// runScan lists (or reuses) up to q.limit keys, fetches each object and
-// matches it. Matches stream into the results list as they are found; Esc
-// stops the scan and keeps them.
+// complete reports whether every key in the bucket was checked.
+func (o scanOutcome) complete() bool { return !o.stopped && o.listErr == nil }
+
+// keySource produces the keys to scan, calling emit for each; it stops
+// early when emit returns false.
+type keySource func(ctx context.Context, emit func(key string) bool) error
+
+// runScan fetches every object of the bucket and matches it. Matches stream
+// into the results list as they are found; Esc stops the scan and keeps
+// them.
 func (a *App) runScan(btype, bucket string, props map[string]any, q findQuery) {
 	b := a.browser
 	path, _ := jsontree.ParsePath(q.path)                           // validated in the dialog
 	m, _ := jsontree.NewMatcher(matchModeFromName(q.mode), q.value) // validated in the dialog
 	crdt := isCRDT(props)
+	client := a.client
 
-	// reuse the open key listing when it already covers what we need
-	var known []string
-	if b.level == levelKeys && !b.inResults && b.btype == btype && b.bucket == bucket &&
-		(!b.truncated || len(b.items) >= q.limit) {
-		known = append([]string(nil), b.items[:min(len(b.items), q.limit)]...)
+	// A complete key list that is already open is reused; anything else
+	// (a truncated page, or starting from the bucket list) streams the
+	// bucket's keys from Riak.
+	var source keySource
+	if b.level == levelKeys && !b.inResults && b.btype == btype && b.bucket == bucket && !b.truncated {
+		known := append([]string(nil), b.items...)
+		source = func(ctx context.Context, emit func(string) bool) error {
+			for _, k := range known {
+				if !emit(k) {
+					break
+				}
+			}
+			return nil
+		}
+	} else {
+		source = func(ctx context.Context, emit func(string) bool) error {
+			err := client.StreamKeys(ctx, btype, bucket, func(chunk []string) error {
+				for _, k := range chunk {
+					if !emit(k) {
+						return context.Canceled
+					}
+				}
+				return nil
+			})
+			if ctx.Err() != nil {
+				return nil // stopped, not a listing failure
+			}
+			return err
+		}
 	}
 
 	back := b.snapshot()
@@ -329,14 +359,14 @@ func (a *App) runScan(btype, bucket string, props map[string]any, q findQuery) {
 	st := &scanStats{}
 	p.keepOnCancel = true
 	p.progressText = func() string {
-		if st.listing.Load() {
-			return "listing keys: " + formatCount(int(st.listed.Load()))
+		of := ""
+		if st.listingDone.Load() {
+			of = " of " + formatCount(int(st.fed.Load()))
 		}
-		return fmt.Sprintf("checked %s / %s · %s", formatCount(int(st.checked.Load())),
-			formatCount(int(st.total.Load())), pluralize(int(st.matched.Load()), "match", "matches"))
+		return fmt.Sprintf("checked %s%s · %s", formatCount(int(st.checked.Load())), of,
+			pluralize(int(st.matched.Load()), "match", "matches"))
 	}
 
-	client := a.client
 	// deliver applies a batch of hits on the UI goroutine, unless the user
 	// has moved on to another view meanwhile
 	deliver := func(batch []scanHit) {
@@ -354,39 +384,30 @@ func (a *App) runScan(btype, bucket string, props map[string]any, q findQuery) {
 		})
 	}
 
-	// The scan is bounded by its key limit and by per-request timeouts, not
-	// by one overall deadline.
-	a.asyncPending(p, "searching "+bucket, 24*time.Hour, func(ctx context.Context) (any, error) {
-		keys := known
-		if keys == nil {
-			st.listing.Store(true)
-			lctx, cancel := context.WithTimeout(ctx, 4*client.Timeout())
-			var err error
-			keys, _, err = client.ListKeysProgress(lctx, btype, bucket, q.limit, func(n int) { st.listed.Store(int64(n)) })
-			cancel()
-			st.listing.Store(false)
-			if err != nil {
-				if ctx.Err() != nil {
-					return scanOutcome{stopped: true}, nil
-				}
-				return nil, err
-			}
-		}
-		st.total.Store(int64(len(keys)))
-		return scanKeys(ctx, client, btype, bucket, keys, crdt, path, m, st, deliver), nil
+	// No overall deadline: the scan runs until the bucket is done or the
+	// user presses Esc; each object fetch has its own timeout.
+	a.asyncPending(p, "searching "+bucket, 365*24*time.Hour, func(ctx context.Context) (any, error) {
+		return scanKeys(ctx, client, btype, bucket, source, crdt, path, m, st, deliver), nil
 	}, func(r any, err error) {
 		if err != nil {
 			return
 		}
 		out := r.(scanOutcome)
 		if b.resultsGen == gen && b.inResults {
+			if !out.complete() {
+				b.resultsTitle = "find results (incomplete)"
+			}
 			b.render()
 			if b.list.GetCurrentItem() == 0 && len(b.items) > 0 {
 				b.list.SetCurrentItem(1)
 				b.restyleAll()
 			}
 		}
-		checked, total, matched := int(st.checked.Load()), int(st.total.Load()), int(st.matched.Load())
+		checked, matched := int(st.checked.Load()), int(st.matched.Load())
+		found := pluralize(matched, "match", "matches")
+		if matched == 0 {
+			found = "no matches"
+		}
 		skipped := ""
 		if n := st.skipped.Load(); n > 0 {
 			skipped = fmt.Sprintf(" · %s skipped (not JSON, siblings or unreadable)", formatCount(int(n)))
@@ -394,19 +415,24 @@ func (a *App) runScan(btype, bucket string, props map[string]any, q findQuery) {
 				skipped += ", last error: " + out.lastErr.Error()
 			}
 		}
-		if out.stopped {
-			a.status.Warn("Stopped after checking %s of %s keys · %s%s", formatCount(checked), formatCount(total),
-				pluralize(matched, "match", "matches"), skipped)
-			return
+		switch {
+		case out.stopped:
+			a.status.Warn("Stopped after checking %s · %s. Not all keys were checked%s",
+				pluralize(checked, "key", "keys"), found, skipped)
+		case out.listErr != nil:
+			a.status.Err(fmt.Errorf("listing keys failed after %s (%v) · %s. Not all keys were checked",
+				pluralize(checked, "key", "keys"), out.listErr, found))
+		default:
+			a.status.Success("Searched all %s · %s%s", pluralize(checked, "key", "keys"), found, skipped)
 		}
-		a.status.Success("Checked %s · %s%s", pluralize(checked, "key", "keys"), pluralize(matched, "match", "matches"), skipped)
 	})
 }
 
-// scanKeys fetches and matches keys with a bounded worker pool, streaming
-// hits through deliver in batches. It returns when all keys are checked or
-// ctx is cancelled; every delivered batch has been applied by then.
-func scanKeys(ctx context.Context, client *riak.Client, btype, bucket string, keys []string, crdt bool,
+// scanKeys fetches and matches the keys from source with a bounded worker
+// pool, streaming hits through deliver in batches. It returns when the
+// source is exhausted and all keys are checked, or when ctx is cancelled;
+// every delivered batch has been applied by then.
+func scanKeys(ctx context.Context, client *riak.Client, btype, bucket string, source keySource, crdt bool,
 	path jsontree.FieldPath, m *jsontree.Matcher, st *scanStats, deliver func([]scanHit)) scanOutcome {
 	jobs := make(chan string)
 	hits := make(chan scanHit, 64)
@@ -466,13 +492,25 @@ func scanKeys(ctx context.Context, client *riak.Client, btype, bucket string, ke
 		}
 	}()
 
-feed:
-	for _, k := range keys {
+	// feed: Riak may repeat keys across streamed chunks, so remember which
+	// were sent (key strings only, a small fraction of the objects' size).
+	// Sending blocks while all workers are busy, which throttles reading.
+	seen := map[string]bool{}
+	listErr := source(ctx, func(k string) bool {
+		if seen[k] {
+			return true
+		}
+		seen[k] = true
 		select {
 		case jobs <- k:
+			st.fed.Add(1)
+			return true
 		case <-ctx.Done():
-			break feed
+			return false
 		}
+	})
+	if ctx.Err() == nil {
+		st.listingDone.Store(true)
 	}
 	close(jobs)
 	workers.Wait()
@@ -481,7 +519,7 @@ feed:
 
 	errMu.Lock()
 	defer errMu.Unlock()
-	return scanOutcome{stopped: ctx.Err() != nil, lastErr: lastErr}
+	return scanOutcome{stopped: ctx.Err() != nil, listErr: listErr, lastErr: lastErr}
 }
 
 // errSkip marks objects that are skipped by design (not JSON, siblings,
