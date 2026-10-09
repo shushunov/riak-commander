@@ -6,6 +6,10 @@ uses [semantic versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Copyright, license and homepage in `--version`, `--help` and the F1 help.
+
 ## [0.1.0] - 2026-10-02
 
 ### Added

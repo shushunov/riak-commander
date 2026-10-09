@@ -33,6 +33,9 @@ var (
 	commit  = ""
 )
 
+// notice is printed by --version and --help.
+const notice = "Copyright (c) 2026 Oleksandr Shushunov · MIT License\nhttps://github.com/shushunov/riak-commander"
+
 func main() {
 	os.Exit(run())
 }
@@ -67,7 +70,9 @@ Environment:
   RIAK_COMMANDER_THEME  default for --theme
   NO_COLOR              when set (and --theme is not), use the mono theme
   XDG_CONFIG_HOME       base directory of the server history file
-`)
+
+%s
+`, notice)
 	}
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		if err == flag.ErrHelp {
@@ -77,6 +82,7 @@ Environment:
 	}
 	if *showVersion {
 		fmt.Println("riak-commander", versionString())
+		fmt.Println(notice)
 		return 0
 	}
 

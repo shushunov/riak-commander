@@ -339,6 +339,7 @@ func TestHelpOpensOnContextPage(t *testing.T) {
 	typeText(sim, "?")
 	waitFor(t, sim, app, "Riak Commander v9.9.9 · help")
 	waitFor(t, sim, app, "What this is")
+	waitFor(t, sim, app, "Oleksandr Shushunov")
 	sim.InjectKey(tcell.KeyTab, 0, tcell.ModNone)
 	waitFor(t, sim, app, "Recent servers")
 	sim.InjectKey(tcell.KeyEscape, 0, tcell.ModNone)

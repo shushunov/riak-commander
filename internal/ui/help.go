@@ -40,7 +40,11 @@ Every F-key has an alternative for terminals that intercept F-keys
 
 # Safety in one sentence
 Nothing is written to Riak until you press F2 (save) or confirm a create or
-delete, and saves keep the vclock and all secondary indexes.`},
+delete, and saves keep the vclock and all secondary indexes.
+
+# About
+Copyright (c) 2026 Oleksandr Shushunov · MIT License
+https://github.com/shushunov/riak-commander`},
 
 	{"Servers", `
 # Connecting
