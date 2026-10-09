@@ -293,6 +293,10 @@ RIAK_LIVE=127.0.0.1:8098 go test ./... -run Live -v
 See [CONTRIBUTING.md](CONTRIBUTING.md) and
 [docs/architecture.md](docs/architecture.md).
 
+## Author
+
+Oleksandr Shushunov ([@shushunov](https://github.com/shushunov))
+
 ## License
 
 [MIT](LICENSE)
